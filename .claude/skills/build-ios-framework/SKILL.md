@@ -178,14 +178,23 @@ cd examples/ios
 
 ### Step 9: 生成 xcframework（真机 + 模拟器合并）
 
+**⚠️ 不要包含 dSYM！** 包含 dSYM 会导致在其他项目中出现 "Missing path from XCFramework as defined by DebugSymbolsPath" 错误。
+
+直接使用 `xcodebuild -create-xcframework` 不带 `-debug-symbols` 参数：
+
 ```bash
 cd examples/xcframewrok
-./make-xcframework.sh
+rm -rf FSPlayer.xcframework
+xcodebuild -create-xcframework \
+    -framework ../ios/Release-iphoneos/FSPlayer.framework \
+    -framework ../ios/Release-iphonesimulator/FSPlayer.framework \
+    -output FSPlayer.xcframework
 ```
 
 产物：`examples/xcframewrok/FSPlayer.xcframework`
 
-> ⚠️ `make-xcframework.sh` 默认会尝试合并所有平台（macOS、iOS、tvOS）。如果 macOS/tvOS 的 Framework 不存在，脚本会跳过这些平台。确保只存在 iOS 的 Framework 即可。
+> ⚠️ 不要使用 `./make-xcframework.sh`！它默认会包含 dSYM，导致在其他项目中报错。
+> 脚本已更新为不包含 dSYM，但为了确保一致性，建议直接使用上面的命令。
 
 ### Step 10: 最终验证
 

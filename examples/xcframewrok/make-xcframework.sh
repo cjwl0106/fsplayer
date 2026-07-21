@@ -28,10 +28,9 @@ function get_inputs_with_path()
     if [[ -d $fmwk ]]; then
         inputs="$inputs -framework $fmwk"
     fi
-    fmwk_dsym="${fmwk}.dSYM"
-    if [[ -d $fmwk_dsym ]]; then
-        inputs="$inputs -debug-symbols $(cd $fmwk_dsym; DIRNAME=$(dirname pwd); cd "$DIRNAME"; pwd)"
-    fi
+    # dSYM 不包含在 xcframework 中，避免在其他项目中出现
+    # "Missing path from XCFramework as defined by DebugSymbolsPath" 错误。
+    # 如果需要调试符号，请在项目中单独配置 dSYM 搜索路径。
     echo "$inputs"
 }
 
