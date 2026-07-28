@@ -47,7 +47,7 @@ export IPHONEOS_DEPLOYMENT_TARGET=11.0
 
 xcodebuild -project ${PROJECT_NAME} -target ${TARGET_NAME} \
 -configuration Release  \
--sdk iphonesimulator -arch x86_64 -arch arm64 \
+-sdk iphonesimulator -arch arm64 \
 BUILD_DIR="$THIS_DIR" \
 clean build
 

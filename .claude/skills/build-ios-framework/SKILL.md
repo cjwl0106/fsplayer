@@ -236,6 +236,36 @@ xcodebuild -create-xcframework \
 5. **bluray 必须在 xml2 之后编译** — bluray 依赖 libxml2
 6. **只编译 arm64 和 arm64_simulator** — 不需要 x86_64_simulator
 7. **lipo 需要手动执行** — FFToolChain 的 lipo 命令不支持多架构参数，每次 lipo 会删除之前的产物
+8. **bluray 1.5.0 使用 meson 构建系统** — 从 autotools 切换到 meson，编译脚本已更新
+9. **bluray 1.5.0 需要手动 patch** — 旧版 patch 不兼容，需要手动添加 bd_file_read/seek/size、bd_open_fs 和 iOS mount 适配
+10. **harfbuzz 14.2.1 需要 objcpp 编译器** — meson cross file 需要添加 `objc` 和 `objcpp` binary 定义
+11. **FFmpeg 编译前需要确保 universal 目录有所有库的 pkgconfig** — lipo 命令会删除之前的产物，需要手动恢复
+
+## 依赖库版本（2026-07-28 升级后）
+
+| 库名 | 版本 | 说明 |
+|------|------|------|
+| openssl | 3.6.3 | 安全修复，保持 3.x 系列 |
+| opus | 1.6.1 | 已是最新 |
+| dav1d | 1.5.4 | 安全修复 |
+| uavs3d | 1.2.1 | 已是最新 |
+| smb2 | 6.2 | 已是最新 |
+| webp | v1.6.0 | 已是最新 |
+| xml2 | 2.15.3 | 安全修复 |
+| bluray | 1.5.0 | **重大升级**，从 autotools 切换到 meson |
+| freetype | 2.14.1 | 已是最新 |
+| fribidi | 1.0.16 | 已是最新 |
+| harfbuzz | 14.2.1 | **重大升级**（从 12.3.2） |
+| unibreak | 7.0 | 版本升级（从 6.1） |
+| ass | 0.17.5 | 小版本升级 |
+| ffmpeg | 8.1.2 | 已是最新 |
+
+## 升级依赖库版本的方法
+
+1. 修改 `FFToolChain/configs/libs/<lib>.sh` 中的 `GIT_COMMIT` 和 `GIT_REPO_VERSION`
+2. 注释掉 `PRE_COMPILE_TAG`（预编译包版本不匹配）
+3. 如果构建系统发生变化（如 bluray 从 autotools 到 meson），需要更新 `LIB_DEPENDS_BIN` 和编译脚本
+4. 重新 init + compile
 
 ## 常见问题
 
@@ -261,6 +291,27 @@ rm FFToolChain/build/src/ios/ffmpeg8-arm64_simulator/config.h
 ### Q: lipo 时找不到 `libpostproc.a`
 
 这是正常的！`libpostproc` 是 GPL-only 的库，LGPL 模式下不会编译。
+
+### Q: bluray 编译失败 - `bootstrap` 文件不存在
+
+bluray 1.5.0 已从 autotools 切换到 meson 构建系统。编译脚本已更新为使用 `meson-compatible.sh`。
+
+### Q: bluray 编译失败 - `DiskArbitration/DADisk.h` 文件不存在
+
+iOS 不支持 DiskArbitration framework。需要修改 bluray 源码的 `src/meson.build`，在 iOS 上使用 `file/mount.c`（stub 实现）替代 `file/mount_darwin.c`。
+
+### Q: harfbuzz 编译失败 - `objcpp` compiler binary not defined
+
+需要在 meson cross file 中添加 `objc` 和 `objcpp` binary 定义：
+```
+[binaries]
+objc = 'clang'
+objcpp = 'clang++'
+```
+
+### Q: FFmpeg 编译时 openssl/bluray 被禁用
+
+确保 `build/product/ios/universal/` 目录下有所有库的 pkgconfig 文件。lipo 命令会删除之前的产物，需要手动恢复。
 
 ### Q: 想要完全清理重新构建
 
