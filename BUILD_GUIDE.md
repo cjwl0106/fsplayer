@@ -16,9 +16,9 @@
 > | webp | v1.6.0 | 已是最新 |
 > | xml2 | 2.15.3 | 安全修复 |
 > | bluray | 1.5.0 | **重大升级**，从 autotools 切换到 meson |
-> | freetype | 2.14.1 | 已是最新 |
+> | freetype | 2.14.3 | 已是最新 |
 > | fribidi | 1.0.16 | 已是最新 |
-> | harfbuzz | 14.2.1 | **重大升级**（从 12.3.2） |
+> | harfbuzz | 14.3.0 | **重大升级**（从 12.3.2） |
 > | unibreak | 7.0 | 版本升级（从 6.1） |
 > | ass | 0.17.5 | 小版本升级 |
 > | ffmpeg | 8.1.2 | 已是最新 |
@@ -54,6 +54,8 @@ Step 1: 初始化（克隆源码仓库）
   ↓
 Step 2: 编译基础依赖库（OpenSSL、opus、dav1d 等）
   ↓
+Step 2.5: 编译字幕库（freetype、fribidi、harfbuzz、unibreak、ass）
+  ↓
 Step 3: 编译 bluray（依赖 xml2）
   ↓
 Step 4: 编译 FFmpeg 8（LGPLv3 模式，rebuild）
@@ -85,7 +87,15 @@ cd FFToolChain
 ./main.sh init -p ios -l 'openssl3 opus dav1d uavs3d smb2 webp xml2'
 ```
 
-### 1.2 初始化 bluray
+### 1.3 初始化字幕库
+
+字幕库是 FSPlayer 的必需依赖（用于 ASS 字幕渲染），不是可选的：
+
+```bash
+./main.sh init -p ios -l 'freetype fribidi harfbuzz unibreak ass'
+```
+
+### 1.4 初始化 bluray
 
 ```bash
 ./main.sh init -p ios -l 'bluray'
@@ -93,7 +103,7 @@ cd FFToolChain
 
 > ⚠️ bluray 依赖 libxml2，必须先初始化 xml2。此处分开初始化是为了确保依赖顺序正确。
 
-### 1.3 初始化 FFmpeg 8
+### 1.5 初始化 FFmpeg 8
 
 ```bash
 ./main.sh init -p ios -l 'ffmpeg8'
@@ -102,10 +112,6 @@ cd FFToolChain
 > ⚠️ LGPL 模式下以下库不可用（已从配置中禁用）：
 > - **x264 / x265** — GPL 许可的编码器
 > - **dvdread / dvdnav** — GPL 许可的 DVD 库
-> 如果需要字幕渲染（ASS 格式），还需初始化字幕库：
-> ```bash
-> ./main.sh init -p ios -l 'freetype fribidi harfbuzz unibreak ass'
-> ```
 
 ---
 
@@ -121,12 +127,19 @@ cd FFToolChain
 ./main.sh compile -p ios -a arm64_simulator -l 'openssl3 opus dav1d uavs3d smb2 webp xml2'
 ```
 
-**如果需要字幕支持：**
+### Step 2.5: 编译字幕库
+
+字幕库是 FSPlayer 的必需依赖（用于 ASS 字幕渲染），不是可选的：
 
 ```bash
+# 真机 arm64
 ./main.sh compile -p ios -a arm64 -l 'freetype fribidi harfbuzz unibreak ass'
+
+# 模拟器 arm64
 ./main.sh compile -p ios -a arm64_simulator -l 'freetype fribidi harfbuzz unibreak ass'
 ```
+
+> ⚠️ harfbuzz 14.3.0 需要 objcpp 编译器，meson cross file 需要添加 `objc` 和 `objcpp` binary 定义。
 
 ---
 

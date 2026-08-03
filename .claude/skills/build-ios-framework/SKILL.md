@@ -18,11 +18,11 @@ user-invocable: true
 
 以下仅列出与 BUILD_GUIDE.md 的**差异和补充**：
 
-### Step 9 差异：生成 xcframework 时不包含 dSYM
+### Step 9 差异：生成 xcframework
 
-**⚠️ 不要使用 `./make-xcframework.sh`！** 它默认会包含 dSYM，导致在其他项目中出现 "Missing path from XCFramework as defined by DebugSymbolsPath" 错误。
+BUILD_GUIDE.md 中使用 `./make-xcframework.sh`，该脚本已更新为不包含 dSYM（避免在其他项目中出现 "Missing path from XCFramework as defined by DebugSymbolsPath" 错误），可以直接使用。
 
-直接使用 `xcodebuild -create-xcframework` 不带 `-debug-symbols` 参数：
+也可以手动执行等效命令：
 
 ```bash
 cd examples/xcframewrok
@@ -61,9 +61,9 @@ xcodebuild -create-xcframework \
 7. **lipo 需要手动执行** — FFToolChain 的 lipo 命令不支持多架构参数，每次 lipo 会删除之前的产物
 8. **bluray 1.5.0 使用 meson 构建系统** — 从 autotools 切换到 meson，编译脚本已更新
 9. **bluray 1.5.0 需要手动 patch** — 旧版 patch 不兼容，需要手动添加 bd_file_read/seek/size、bd_open_fs 和 iOS mount 适配
-10. **harfbuzz 14.2.1 需要 objcpp 编译器** — meson cross file 需要添加 `objc` 和 `objcpp` binary 定义
+10. **harfbuzz 14.3.0 需要 objcpp 编译器** — meson cross file 需要添加 `objc` 和 `objcpp` binary 定义
 11. **FFmpeg 编译前需要确保 universal 目录有所有库的 pkgconfig** — lipo 命令会删除之前的产物，需要手动恢复
-12. **xcframework 不要包含 dSYM** — 会导致在其他项目中出现 DebugSymbolsPath 错误
+12. **字幕库是必需依赖** — freetype、fribidi、harfbuzz、unibreak、ass 被 FSPlayer 直接链接，不是可选的
 
 ## 常见问题
 
