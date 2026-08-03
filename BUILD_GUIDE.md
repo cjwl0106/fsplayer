@@ -283,6 +283,7 @@ set -e
 cd FFToolChain
 
 DEPS="openssl3 opus dav1d uavs3d smb2 webp xml2"
+SUBTITLE="freetype fribidi harfbuzz unibreak ass"
 BLURAY="bluray"
 FFMPEG_LIB="ffmpeg8"
 ARCHS="arm64 arm64_simulator"
@@ -290,6 +291,8 @@ ARCHS="arm64 arm64_simulator"
 # Step 1: 初始化
 echo "=== Init deps ==="
 ./main.sh init -p ios -l "$DEPS"
+echo "=== Init subtitle ==="
+./main.sh init -p ios -l "$SUBTITLE"
 echo "=== Init bluray ==="
 ./main.sh init -p ios -l "$BLURAY"
 echo "=== Init ffmpeg8 ==="
@@ -299,6 +302,12 @@ echo "=== Init ffmpeg8 ==="
 for arch in $ARCHS; do
     echo "=== Compile deps for $arch ==="
     ./main.sh compile -p ios -a $arch -l "$DEPS"
+done
+
+# Step 2.5: 编译字幕库
+for arch in $ARCHS; do
+    echo "=== Compile subtitle for $arch ==="
+    ./main.sh compile -p ios -a $arch -l "$SUBTITLE"
 done
 
 # Step 3: 编译 bluray
