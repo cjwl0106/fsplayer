@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document type="com.apple.InterfaceBuilder3.Cocoa.XIB" version="3.0" toolsVersion="24765" targetRuntime="MacOSX.Cocoa" propertyAccessControl="none" useAutolayout="YES" customObjectInstantitationMethod="direct">
+    <dependencies>
+        <deployment identifier="macosx"/>
+        <plugIn identifier="com.apple.InterfaceBuilder.CocoaPlugin" version="24765"/>
+        <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0"/>
+    </dependencies>
+    <objects>
+        <customObject id="-2" userLabel="File's Owner" customClass="MRRootViewController">
+            <connections>
+                <outlet property="playerContainer" destination="Vxa-JI-KKV" id="QNi-OK-bky"/>
+                <outlet property="siderBarContainer" destination="bWb-Ai-RJ1" id="piV-gQ-4Sj"/>
+                <outlet property="siderBarWidthConstraint" destination="o2f-4k-XN6" id="Bsz-8U-afr"/>
+                <outlet property="view" destination="lpW-6Y-TED" id="sKs-YW-giZ"/>
+            </connections>
+        </customObject>
+        <customObject id="-1" userLabel="First Responder" customClass="FirstResponder"/>
+        <customObject id="-3" userLabel="Application" customClass="NSObject"/>
+        <view id="lpW-6Y-TED" customClass="MRTrackingView">
+            <rect key="frame" x="0.0" y="0.0" width="1507" height="708"/>
+            <autoresizingMask key="autoresizingMask"/>
+            <subviews>
+                <customView translatesAutoresizingMaskIntoConstraints="NO" id="bFq-6V-0jf" customClass="MRDragView">
+                    <rect key="frame" x="0.0" y="0.0" width="1507" height="708"/>
+                    <connections>
+                        <outlet property="delegate" destination="-2" id="X0U-fG-6kn"/>
+                    </connections>
+                </customView>
+                <customView translatesAutoresizingMaskIntoConstraints="NO" id="Vxa-JI-KKV" userLabel="player">
+                    <rect key="frame" x="0.0" y="0.0" width="1507" height="708"/>
+                </customView>
+                <customView horizontalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="bWb-Ai-RJ1" userLabel="sidebar">
+                    <rect key="frame" x="1507" y="0.0" width="0.0" height="708"/>
+                    <constraints>
+                        <constraint firstAttribute="width" priority="750" id="o2f-4k-XN6"/>
+                    </constraints>
+                </customView>
+            </subviews>
+            <constraints>
+                <constraint firstItem="bWb-Ai-RJ1" firstAttribute="top" secondItem="lpW-6Y-TED" secondAttribute="top" id="4kZ-y3-1F8"/>
+                <constraint firstItem="bWb-Ai-RJ1" firstAttribute="leading" secondItem="Vxa-JI-KKV" secondAttribute="trailing" id="5Kd-dV-PZF"/>
+                <constraint firstAttribute="trailing" secondItem="bFq-6V-0jf" secondAttribute="trailing" id="7Sn-8g-0aW"/>
+                <constraint firstAttribute="trailing" secondItem="bWb-Ai-RJ1" secondAttribute="trailing" id="GLs-zL-S4G"/>
+                <constraint firstAttribute="bottom" secondItem="bFq-6V-0jf" secondAttribute="bottom" id="IbN-cK-7HX"/>
+                <constraint firstAttribute="bottom" secondItem="bWb-Ai-RJ1" secondAttribute="bottom" id="IxF-yf-r14"/>
+                <constraint firstItem="bFq-6V-0jf" firstAttribute="top" secondItem="lpW-6Y-TED" secondAttribute="top" id="VXG-V8-Itt"/>
+                <constraint firstItem="Vxa-JI-KKV" firstAttribute="top" secondItem="lpW-6Y-TED" secondAttribute="top" id="bwL-9z-Pqa"/>
+                <constraint firstAttribute="bottom" secondItem="Vxa-JI-KKV" secondAttribute="bottom" id="e4d-WO-IjK"/>
+                <constraint firstItem="bFq-6V-0jf" firstAttribute="leading" secondItem="lpW-6Y-TED" secondAttribute="leading" id="fmz-1U-OP6"/>
+                <constraint firstItem="Vxa-JI-KKV" firstAttribute="leading" secondItem="lpW-6Y-TED" secondAttribute="leading" id="q5j-JG-h3s"/>
+            </constraints>
+            <userDefinedRuntimeAttributes>
+                <userDefinedRuntimeAttribute type="color" keyPath="backgroundColor">
+                    <color key="value" name="labelColor" catalog="System" colorSpace="catalog"/>
+                </userDefinedRuntimeAttribute>
+            </userDefinedRuntimeAttributes>
+            <point key="canvasLocation" x="-257.5" y="-11"/>
+        </view>
+        <userDefaultsController representsSharedInstance="YES" id="OCk-Q5-1dK"/>
+    </objects>
+</document>

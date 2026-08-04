@@ -340,7 +340,6 @@ typedef struct VideoState {
     AVFilterGraph *agraph;              // audio filter graph
 #endif
 #if CONFIG_VIDEO_AVFILTER
-    int vfilter_idx;
     AVFilterContext *in_video_filter;   // the first filter in the video chain
     AVFilterContext *out_video_filter;  // the last filter in the video chain
 #endif
@@ -405,6 +404,8 @@ typedef struct FFStatistic
     float avdelay;
     float vmdiff;
     int64_t bit_rate;
+    int sar_num;
+    int sar_den;
 
     FFTrackCacheStatistic video_cache;
     FFTrackCacheStatistic audio_cache;
@@ -542,6 +543,7 @@ typedef struct FFPlayer {
     int videotoolbox_hwaccel;
     int cvpixelbufferpool;
     int copy_hw_frame;
+    int deinterlace;
     
     int mediacodec_all_videos;
     int mediacodec_avc;
@@ -566,8 +568,7 @@ typedef struct FFPlayer {
 
     /* filters */
 #if CONFIG_VIDEO_AVFILTER
-    const char **vfilters_list;
-    int nb_vfilters;
+    char *vfilters;
     char *vfilter0;
     SDL_mutex  *vf_mutex;
     int         vf_changed;
@@ -660,8 +661,7 @@ inline static void ffp_reset_internal(FFPlayer *ffp)
     av_freep(&ffp->video_codec_name);
     ffp->rdftspeed              = 0.02;
 #if CONFIG_VIDEO_AVFILTER
-    av_freep(&ffp->vfilters_list);
-    ffp->nb_vfilters            = 0;
+    av_freep(&ffp->vfilters);
     ffp->vfilter0               = NULL;
     SDL_DestroyMutexP(&ffp->vf_mutex);
     ffp->vf_changed             = 0;
@@ -715,6 +715,7 @@ inline static void ffp_reset_internal(FFPlayer *ffp)
 
     ffp->videotoolbox_hwaccel           = 1; // option
     ffp->cvpixelbufferpool              = 1; // option
+    ffp->deinterlace                    = 0; // option
 
     ffp->mediacodec_all_videos          = 0; // option
     ffp->mediacodec_avc                 = 0; // option

@@ -82,15 +82,12 @@ typedef struct SDL_TextureOverlay SDL_TextureOverlay;
 @property(nonatomic) SDL_TextureOverlay * _Nullable overlay;
 @property(nonatomic) id _Nullable subTexture;
 @property(nonatomic) long tag;
-@property(nonatomic) CFTimeInterval presentationTime;
 
 @end
 
 static inline uint32_t fs_ass_color_to_int(UIColor *color) {
 #if TARGET_OS_OSX
-    if (![color.colorSpaceName isEqualToString:NSDeviceRGBColorSpace] && ![color.colorSpaceName isEqualToString:NSCalibratedRGBColorSpace]) {
-        color = [color colorUsingColorSpaceName:NSDeviceRGBColorSpace];
-    }
+    color = [color colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]] ?: color;
 #endif
     CGFloat r,g,b,a;
     [color getRed:&r green:&g blue:&b alpha:&a];
@@ -157,12 +154,11 @@ typedef enum : NSUInteger {
 #if TARGET_OS_IOS
 @property(nonatomic) CGFloat scaleFactor;
 #endif
-/*
- if you update these preference blow, when player paused,
- you can call -[setNeedsRefreshCurrentPic] method let current picture refresh right now.
- */
-// rotate preference
-@property(nonatomic) FSRotatePreference rotatePreference;
+
+@property(nonatomic) FSRotatePreference rotatePreference __deprecated_msg("will be removed in future version");
+@property(nonatomic) float xRotateDegrees;
+@property(nonatomic) float yRotateDegrees;
+@property(nonatomic) float zRotateDegrees;
 // color conversion preference
 @property(nonatomic) FSColorConvertPreference colorPreference;
 // user defined display aspect ratio
