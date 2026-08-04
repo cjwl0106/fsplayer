@@ -14,13 +14,27 @@ user-invocable: true
 
 ## 构建流程
 
-**完整构建步骤请参照 [BUILD_GUIDE.md](../../../BUILD_GUIDE.md)**，按 Step 1 ~ Step 5（手动 lipo）执行。
+所有构建步骤已自动化为 [build-lgpl.sh](../../../build-lgpl.sh) 脚本：
 
-以下仅列出与 BUILD_GUIDE.md 的**差异和补充**：
+```bash
+# 一键执行全部步骤（init → compile → lipo → framework → verify）
+./build-lgpl.sh all
 
-### Step 9 差异：生成 xcframework
+# 也可以分步执行
+./build-lgpl.sh init       # Step 1: 初始化源码仓库
+./build-lgpl.sh compile    # Step 2-4: 编译所有库
+./build-lgpl.sh lipo       # Step 5: 手动 lipo FFmpeg8 产物
+./build-lgpl.sh framework  # Step 6-9: 生成 xcframework
+./build-lgpl.sh verify     # 验证 LGPL 许可合规性
+```
 
-BUILD_GUIDE.md 中使用 `./make-xcframework.sh`，该脚本已更新为不包含 dSYM（避免在其他项目中出现 "Missing path from XCFramework as defined by DebugSymbolsPath" 错误），可以直接使用。
+**手动步骤的详细说明请参照 [BUILD_GUIDE.md](../../../BUILD_GUIDE.md)**。
+
+## 补充说明
+
+### 生成 xcframework
+
+`./build-lgpl.sh framework` 内部调用 `./make-xcframework.sh`，该脚本已更新为不包含 dSYM（避免在其他项目中出现 "Missing path from XCFramework as defined by DebugSymbolsPath" 错误），可以直接使用。
 
 也可以手动执行等效命令：
 
@@ -33,7 +47,9 @@ xcodebuild -create-xcframework \
     -output FSPlayer.xcframework
 ```
 
-### Step 10 补充：最终验证
+### 最终验证
+
+`./build-lgpl.sh verify` 会自动检查 LGPL 许可合规性。如需手动验证：
 
 ```bash
 # 检查 xcframework 产物
@@ -42,21 +58,15 @@ ls examples/xcframewrok/FSPlayer.xcframework/
 # 检查架构
 lipo -info examples/ios/Release-iphoneos/FSPlayer.framework/FSPlayer      # arm64
 lipo -info examples/ios/Release-iphonesimulator/FSPlayer.framework/FSPlayer  # arm64
-
-# 检查 xcframework 包含的切片
-xcodebuild -create-xcframework \
-    -framework examples/ios/Release-iphoneos/FSPlayer.framework \
-    -framework examples/ios/Release-iphonesimulator/FSPlayer.framework \
-    -output /tmp/test.xcframework 2>&1 | head -5
 ```
 
 ## 关键注意事项
 
 1. **不要使用 `./main.sh install`** — 它会下载预编译包覆盖本地 LGPLv3 编译产物
-2. **必须使用 `-c rebuild` 编译 FFmpeg8** — 确保 `--enable-version3` 被正确传递
+2. **必须使用 `-c rebuild` 编译 FFmpeg8** — 确保 `--enable-version3` 被正确传递（`build-lgpl.sh` 已处理）
 3. **不要包含 dvdread/dvdnav** — GPL 许可，与 LGPL 不兼容
 4. **不要包含 x264/x265** — GPL 许可的编码器，与 LGPL 不兼容
-5. **bluray 必须在 xml2 之后编译** — bluray 依赖 libxml2
+5. **bluray 必须在 xml2 之后编译** — bluray 依赖 libxml2（`build-lgpl.sh` 已处理依赖顺序）
 6. **只编译 arm64 和 arm64_simulator** — 不需要 x86_64_simulator
 7. **lipo 需要手动执行** — FFToolChain 的 lipo 命令不支持多架构参数，每次 lipo 会删除之前的产物
 8. **bluray 1.5.0 使用 meson 构建系统** — 从 autotools 切换到 meson，编译脚本已更新
@@ -119,4 +129,4 @@ cd FFToolChain
 ./main.sh compile -p ios -a arm64_simulator -c clean -l 'openssl3 opus bluray dav1d uavs3d smb2 webp xml2 freetype fribidi harfbuzz unibreak ass ffmpeg8'
 ```
 
-然后从 Step 2 重新开始。
+然后从 Step 2 重新开始，或直接执行 `./build-lgpl.sh compile`。

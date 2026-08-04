@@ -4,6 +4,16 @@
 > OpenSSL 使用 **3.6.3**（Apache 2.0 许可，与 LGPL 兼容）。
 > MRFFToolChain 使用最新版本（`e80ccd8b`）。
 > 最终产物为真机 (arm64) + 模拟器 (arm64) 合并的单一 xcframework。
+
+> 💡 **一键构建**：所有步骤已自动化为 `build-lgpl.sh` 脚本，可直接执行：
+> ```bash
+> ./build-lgpl.sh all        # 一键执行全部步骤
+> ./build-lgpl.sh init       # 只初始化源码
+> ./build-lgpl.sh compile    # 只编译库
+> ./build-lgpl.sh lipo       # 只 lipo FFmpeg8 产物
+> ./build-lgpl.sh framework  # 只生成 xcframework
+> ./build-lgpl.sh verify     # 只验证 LGPL 许可
+> ```
 > 
 > **依赖库版本（2026-07-28 升级后）：**
 > | 库名 | 版本 | 说明 |
@@ -289,94 +299,21 @@ cd examples/xcframewrok
 
 ## 快速一键脚本
 
+所有步骤已自动化为 `build-lgpl.sh` 脚本，支持按步骤执行：
+
 ```bash
-#!/bin/zsh
-set -e
+# 一键执行全部步骤（init → compile → lipo → framework → verify）
+./build-lgpl.sh all
 
-cd FFToolChain
-
-DEPS="openssl3 opus dav1d uavs3d smb2 webp xml2"
-SUBTITLE="freetype fribidi harfbuzz unibreak ass"
-BLURAY="bluray"
-FFMPEG_LIB="ffmpeg8"
-ARCHS="arm64 arm64_simulator"
-
-# Step 1: 初始化
-echo "=== Init deps ==="
-./main.sh init -p ios -l "$DEPS"
-echo "=== Init subtitle ==="
-./main.sh init -p ios -l "$SUBTITLE"
-echo "=== Init bluray ==="
-./main.sh init -p ios -l "$BLURAY"
-echo "=== Init ffmpeg8 ==="
-./main.sh init -p ios -l "$FFMPEG_LIB"
-
-# Step 2: 编译基础依赖
-for arch in $ARCHS; do
-    echo "=== Compile deps for $arch ==="
-    ./main.sh compile -p ios -a $arch -l "$DEPS"
-done
-
-# Step 2.5: 编译字幕库
-for arch in $ARCHS; do
-    echo "=== Compile subtitle for $arch ==="
-    ./main.sh compile -p ios -a $arch -l "$SUBTITLE"
-done
-
-# Step 3: 编译 bluray
-for arch in $ARCHS; do
-    echo "=== Compile bluray for $arch ==="
-    ./main.sh compile -p ios -a $arch -l "$BLURAY"
-done
-
-# Step 4: 编译 FFmpeg（rebuild 确保 LGPLv3）
-echo "=== Rebuild FFmpeg for arm64 ==="
-./main.sh compile -p ios -a arm64 -c rebuild -l "$FFMPEG_LIB"
-echo "=== Compile FFmpeg for arm64_simulator ==="
-./main.sh compile -p ios -a arm64_simulator -l "$FFMPEG_LIB"
-
-# Step 5: 验证许可
-echo "=== Verify LGPL license ==="
-grep "CONFIG_GPL\|CONFIG_NONFREE\|CONFIG_VERSION3\|CONFIG_OPENSSL\|FFMPEG_LICENSE" build/src/ios/ffmpeg8-arm64/config.h
-
-# Step 6: 手动 lipo FFmpeg8
-echo "=== Lipo FFmpeg8 ==="
-mkdir -p build/product/ios/universal/ffmpeg/lib build/product/ios/universal/ffmpeg/include
-mkdir -p build/product/ios/universal-simulator/ffmpeg/lib build/product/ios/universal-simulator/ffmpeg/include
-
-for lib in libavcodec libavformat libavutil libswscale libswresample libavfilter libavdevice; do
-    xcrun lipo -create build/product/ios/ffmpeg-arm64/lib/${lib}.a -output build/product/ios/universal/ffmpeg/lib/${lib}.a
-    xcrun lipo -create build/product/ios/ffmpeg-arm64_simulator/lib/${lib}.a -output build/product/ios/universal-simulator/ffmpeg/lib/${lib}.a
-done
-
-cp -Rf build/product/ios/ffmpeg-arm64/include build/product/ios/universal/ffmpeg/
-cp -Rf build/product/ios/ffmpeg-arm64/lib/pkgconfig build/product/ios/universal/ffmpeg/lib/
-cp -Rf build/product/ios/ffmpeg-arm64_simulator/include build/product/ios/universal-simulator/ffmpeg/
-cp -Rf build/product/ios/ffmpeg-arm64_simulator/lib/pkgconfig build/product/ios/universal-simulator/ffmpeg/lib/
-
-BASE_DIR="$(pwd)"
-for pc in build/product/ios/universal/ffmpeg/lib/pkgconfig/*.pc; do
-    sed -i '' "s|prefix=.*|prefix=${BASE_DIR}/build/product/ios/universal/ffmpeg|" "$pc"
-    sed -i '' "s|libdir=.*|libdir=${BASE_DIR}/build/product/ios/universal/ffmpeg/lib|" "$pc"
-    sed -i '' "s|includedir=.*|includedir=${BASE_DIR}/build/product/ios/universal/ffmpeg/include|" "$pc"
-done
-for pc in build/product/ios/universal-simulator/ffmpeg/lib/pkgconfig/*.pc; do
-    sed -i '' "s|prefix=.*|prefix=${BASE_DIR}/build/product/ios/universal-simulator/ffmpeg|" "$pc"
-    sed -i '' "s|libdir=.*|libdir=${BASE_DIR}/build/product/ios/universal-simulator/ffmpeg/lib|" "$pc"
-    sed -i '' "s|includedir=.*|includedir=${BASE_DIR}/build/product/ios/universal-simulator/ffmpeg/include|" "$pc"
-done
-
-# Step 7-8: 生成项目和 Framework
-cd ..
-./generate-proj.sh
-
-cd examples/ios && ./build-framework.sh
-
-# Step 9: xcframework
-cd ../xcframewrok && ./make-xcframework.sh
-
-echo "✅ 全部完成！xcframework 位于 examples/xcframewrok/FSPlayer.xcframework"
+# 也可以分步执行
+./build-lgpl.sh init       # Step 1: 初始化源码仓库
+./build-lgpl.sh compile    # Step 2-4: 编译所有库
+./build-lgpl.sh lipo       # Step 5: 手动 lipo FFmpeg8 产物
+./build-lgpl.sh framework  # Step 6-9: 生成 xcframework
+./build-lgpl.sh verify     # 验证 LGPL 许可合规性
 ```
+
+> 💡 脚本源码见 [build-lgpl.sh](build-lgpl.md)，逻辑与下方手动步骤完全一致。
 
 ---
 
