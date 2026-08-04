@@ -17,21 +17,21 @@
 set -e
 
 # ============================================================
-# 库列表定义
+# 库列表定义（使用 zsh 数组，避免分词问题）
 # ============================================================
 
 # 基础依赖库（无内部依赖）
-DEPS="openssl3 opus dav1d uavs3d smb2 webp xml2"
+DEPS=(openssl3 opus dav1d uavs3d smb2 webp xml2)
 # 字幕库（ASS 字幕渲染所需，FSPlayer 必需依赖）
-SUBTITLE="freetype fribidi harfbuzz unibreak ass"
+SUBTITLE=(freetype fribidi harfbuzz unibreak ass)
 # 蓝光库（依赖 xml2，必须在 xml2 之后编译）
-BLURAY="bluray"
+BLURAY=(bluray)
 # FFmpeg（依赖以上所有库）
-FFMPEG_LIB="ffmpeg8"
+FFMPEG_LIB=(ffmpeg8)
 # 目标架构（只编译 arm64 和 arm64_simulator，不编译 x86_64_simulator）
-ARCHS="arm64 arm64_simulator"
+ARCHS=(arm64 arm64_simulator)
 # FFmpeg lipo 产物列表
-FFMPEG_LIPO_LIBS="libavcodec libavformat libavutil libswscale libswresample libavfilter libavdevice"
+FFMPEG_LIPO_LIBS=(libavcodec libavformat libavutil libswscale libswresample libavfilter libavdevice)
 
 # ============================================================
 # 项目路径
@@ -57,19 +57,19 @@ function do_init() {
 
     # 1.1 初始化基础依赖库
     echo "=== 初始化基础依赖库 ==="
-    ./main.sh init -p ios -l "$DEPS"
+    ./main.sh init -p ios -l "${DEPS[*]}"
 
     # 1.2 初始化字幕库
     echo "=== 初始化字幕库 ==="
-    ./main.sh init -p ios -l "$SUBTITLE"
+    ./main.sh init -p ios -l "${SUBTITLE[*]}"
 
     # 1.3 初始化 bluray（依赖 xml2，必须先初始化 xml2）
     echo "=== 初始化 bluray ==="
-    ./main.sh init -p ios -l "$BLURAY"
+    ./main.sh init -p ios -l "${BLURAY[*]}"
 
     # 1.4 初始化 FFmpeg 8
     echo "=== 初始化 FFmpeg 8 ==="
-    ./main.sh init -p ios -l "$FFMPEG_LIB"
+    ./main.sh init -p ios -l "${FFMPEG_LIB[*]}"
 
     echo ""
     echo "✅ Step 1 完成：所有源码仓库已初始化"
@@ -89,30 +89,30 @@ function do_compile() {
     cd "$FFTOOLCHAIN_DIR"
 
     # Step 2: 编译基础依赖库
-    for arch in $ARCHS; do
+    for arch in "${ARCHS[@]}"; do
         echo "=== 编译基础依赖库 ($arch) ==="
-        ./main.sh compile -p ios -a $arch -l "$DEPS"
+        ./main.sh compile -p ios -a $arch -l "${DEPS[*]}"
     done
 
     # Step 2.5: 编译字幕库
-    for arch in $ARCHS; do
+    for arch in "${ARCHS[@]}"; do
         echo "=== 编译字幕库 ($arch) ==="
-        ./main.sh compile -p ios -a $arch -l "$SUBTITLE"
+        ./main.sh compile -p ios -a $arch -l "${SUBTITLE[*]}"
     done
 
     # Step 3: 编译 bluray（依赖 xml2，必须在 xml2 编译完成后才能编译）
-    for arch in $ARCHS; do
+    for arch in "${ARCHS[@]}"; do
         echo "=== 编译 bluray ($arch) ==="
-        ./main.sh compile -p ios -a $arch -l "$BLURAY"
+        ./main.sh compile -p ios -a $arch -l "${BLURAY[*]}"
     done
 
     # Step 4: 编译 FFmpeg 8（LGPLv3 模式）
     # arm64 必须使用 -c rebuild，确保 --enable-version3 被正确传递
     echo "=== 编译 FFmpeg 8 (arm64, rebuild) ==="
-    ./main.sh compile -p ios -a arm64 -c rebuild -l "$FFMPEG_LIB"
+    ./main.sh compile -p ios -a arm64 -c rebuild -l "${FFMPEG_LIB[*]}"
 
     echo "=== 编译 FFmpeg 8 (arm64_simulator) ==="
-    ./main.sh compile -p ios -a arm64_simulator -l "$FFMPEG_LIB"
+    ./main.sh compile -p ios -a arm64_simulator -l "${FFMPEG_LIB[*]}"
 
     echo ""
     echo "✅ Step 2-4 完成：所有库已编译"
@@ -142,7 +142,7 @@ function do_lipo() {
 
     # 真机 arm64（单架构，直接 lipo）
     echo "=== Lipo FFmpeg8 (arm64) ==="
-    for lib in $FFMPEG_LIPO_LIBS; do
+    for lib in "${FFMPEG_LIPO_LIBS[@]}"; do
         echo "  lipo $lib"
         xcrun lipo -create build/product/ios/ffmpeg-arm64/lib/${lib}.a \
             -output build/product/ios/universal/ffmpeg/lib/${lib}.a
@@ -150,7 +150,7 @@ function do_lipo() {
 
     # 模拟器 arm64（单架构，直接 lipo）
     echo "=== Lipo FFmpeg8 (arm64_simulator) ==="
-    for lib in $FFMPEG_LIPO_LIBS; do
+    for lib in "${FFMPEG_LIPO_LIBS[@]}"; do
         echo "  lipo $lib"
         xcrun lipo -create build/product/ios/ffmpeg-arm64_simulator/lib/${lib}.a \
             -output build/product/ios/universal-simulator/ffmpeg/lib/${lib}.a
@@ -243,82 +243,82 @@ function do_verify() {
     fi
 
     # 检查 FFMPEG_LICENSE
-    local license=$(grep "FFMPEG_LICENSE" "$config_h" | awk '{print $3}' | tr -d '"')
+    local license=$(grep "FFMPEG_LICENSE" "$config_h" | sed 's/.*"\(.*\)".*/\1/')
     if [[ "$license" == "LGPL version 3 or later" ]]; then
         echo "✅ FFMPEG_LICENSE = \"$license\""
-        ((pass++))
+        pass=$((pass+1))
     else
         echo "❌ FFMPEG_LICENSE = \"$license\" (期望: \"LGPL version 3 or later\")"
-        ((fail++))
+        fail=$((fail+1))
     fi
 
     # 检查 CONFIG_GPL
     local gpl=$(grep "#define CONFIG_GPL " "$config_h" | awk '{print $3}')
     if [[ "$gpl" == "0" ]]; then
         echo "✅ CONFIG_GPL = 0 (GPL 已禁用)"
-        ((pass++))
+        pass=$((pass+1))
     else
         echo "❌ CONFIG_GPL = $gpl (期望: 0)"
-        ((fail++))
+        fail=$((fail+1))
     fi
 
     # 检查 CONFIG_NONFREE
     local nonfree=$(grep "#define CONFIG_NONFREE " "$config_h" | awk '{print $3}')
     if [[ "$nonfree" == "0" ]]; then
         echo "✅ CONFIG_NONFREE = 0 (nonfree 已禁用)"
-        ((pass++))
+        pass=$((pass+1))
     else
         echo "❌ CONFIG_NONFREE = $nonfree (期望: 0)"
-        ((fail++))
+        fail=$((fail+1))
     fi
 
     # 检查 CONFIG_VERSION3
     local version3=$(grep "#define CONFIG_VERSION3 " "$config_h" | awk '{print $3}')
     if [[ "$version3" == "1" ]]; then
         echo "✅ CONFIG_VERSION3 = 1 (LGPLv3 已启用)"
-        ((pass++))
+        pass=$((pass+1))
     else
         echo "❌ CONFIG_VERSION3 = $version3 (期望: 1)"
-        ((fail++))
+        fail=$((fail+1))
     fi
 
     # 检查 CONFIG_LGPLV3
     local lgplv3=$(grep "#define CONFIG_LGPLV3 " "$config_h" | awk '{print $3}')
     if [[ "$lgplv3" == "1" ]]; then
         echo "✅ CONFIG_LGPLV3 = 1 (LGPLv3 标志)"
-        ((pass++))
+        pass=$((pass+1))
     else
         echo "❌ CONFIG_LGPLV3 = $lgplv3 (期望: 1)"
-        ((fail++))
+        fail=$((fail+1))
     fi
 
     # 检查 CONFIG_OPENSSL
     local openssl=$(grep "#define CONFIG_OPENSSL " "$config_h" | awk '{print $3}')
     if [[ "$openssl" == "1" ]]; then
         echo "✅ CONFIG_OPENSSL = 1 (OpenSSL 已启用)"
-        ((pass++))
+        pass=$((pass+1))
     else
         echo "❌ CONFIG_OPENSSL = $openssl (期望: 1)"
-        ((fail++))
+        fail=$((fail+1))
     fi
 
     # 检查 libpostproc 不存在（GPL-only 库）
     echo ""
-    if ls build/product/ios/universal/ffmpeg/lib/libpostproc* 2>/dev/null; then
+    if compgen -G 'build/product/ios/universal/ffmpeg/lib/libpostproc*' >/dev/null 2>&1; then
         echo "❌ libpostproc 存在 (GPL-only 库，LGPL 模式下不应编译)"
-        ((fail++))
+        fail=$((fail+1))
     else
         echo "✅ libpostproc 不存在 (GPL-only 库，LGPL 模式下正确)"
-        ((pass++))
+        pass=$((pass+1))
     fi
 
     # 检查 x264/x265 符号不存在
     if nm build/product/ios/universal/ffmpeg/lib/libavcodec.a 2>/dev/null | grep -q "ff_libx264\|ff_libx265"; then
         echo "❌ x264/x265 符号存在 (GPL 许可的编码器，LGPL 模式下应禁用)"
-        ((fail++))
+        fail=$((fail+1))
     else
         echo "✅ x264/x265 符号不存在 (GPL 许可的编码器，LGPL 模式下正确)"
-        ((pass++))
+        pass=$((pass+1))
     fi
 
     # 汇总
