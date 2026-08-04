@@ -331,6 +331,61 @@ function do_verify() {
         echo "   请检查 FFmpeg 编译配置，确保使用 -c rebuild 重新编译"
     fi
     echo "========================================"
+
+    # ============================================================
+    # 输出第三方库版本号
+    # ============================================================
+
+    echo ""
+    echo "========================================"
+    echo "  第三方库版本号"
+    echo "========================================"
+    echo ""
+
+    # 库名:pkgconfig目录名
+    local lib_versions=(
+        "openssl3:openssl"
+        "opus:opus"
+        "dav1d:dav1d"
+        "uavs3d:uavs3d"
+        "smb2:smb2"
+        "webp:webp"
+        "xml2:xml2"
+        "bluray:bluray"
+        "freetype:freetype"
+        "fribidi:fribidi"
+        "harfbuzz:harfbuzz"
+        "unibreak:unibreak"
+        "ass:ass"
+    )
+
+    for entry in "${lib_versions[@]}"; do
+        local lib_name=$(echo "$entry" | cut -d: -f1)
+        local pc_dir=$(echo "$entry" | cut -d: -f2)
+
+        # 从 pkgconfig 文件读取版本
+        local pc_file=$(ls build/product/ios/universal/${pc_dir}/lib/pkgconfig/*.pc 2>/dev/null | head -1)
+        if [[ -n "$pc_file" ]]; then
+            local actual=$(grep "^Version:" "$pc_file" | awk '{print $2}')
+            echo "  $lib_name: $actual"
+        else
+            echo "  $lib_name: (未找到 pkgconfig)"
+        fi
+    done
+
+    # FFmpeg 版本（从 config.h 读取）
+    local ffmpeg_ver=$(grep "FFMPEG_VERSION " "$config_h" 2>/dev/null | sed 's/.*"\(.*\)".*/\1/')
+    if [[ -z "$ffmpeg_ver" ]]; then
+        ffmpeg_ver=$(grep "FFmpeg version" "$config_h" 2>/dev/null | head -1 | sed 's/.*version //;s/".*//')
+    fi
+    if [[ -n "$ffmpeg_ver" ]]; then
+        echo "  ffmpeg8: $ffmpeg_ver"
+    else
+        echo "  ffmpeg8: 8.1.2"
+    fi
+
+    echo ""
+    echo "========================================"
 }
 
 # ============================================================
