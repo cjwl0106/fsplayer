@@ -44,11 +44,11 @@ typedef struct FFSubComponent{
     FFSubtitleBufferPacket sub_buffer_array;
     FSSubtitlePreference sp;
     int sp_changed;
-    float startTime;
-    
-    float previous_uploading;
-    float ass_processed;
-    float pre_loading;
+    double startTime;
+    double previous_uploading;
+    double ass_processed;
+    double pre_loading;
+    double min_pts;
 
 }FFSubComponent;
 
@@ -119,21 +119,23 @@ static int pre_render_ass_frame(FFSubComponent *com, int serial)
             result = -4;
             break;
         }
+
+        double delta = com->previous_uploading - com->pre_loading;
+        if (delta > A_ASS_IMG_DURATION) {
+            com->pre_loading = com->previous_uploading;
+            frame_queue_flush_readable(com->frameq);
+            av_log(NULL, AV_LOG_DEBUG, "sub catch up to video, was behind:%0.3fs\n", delta);
+            result = -5;
+            break;
+        }
+
         //fetch writable slot is important because when read a new event you must put to the frameq other than drop.libass already record the diff,when use ask again will give you no change！
         Frame *sp = frame_queue_peek_writable_noblock(com->frameq);
         if (!sp) {
-            result = -7;
+            result = -6;
             break;
         }
-        
-        float delta = com->previous_uploading - com->pre_loading;
-        if (delta > 0.08) {
-            //subtitle is slower than video, so need fast forward
-            com->pre_loading = com->previous_uploading + 0.2;
-            Frame *sp = frame_queue_peek_offset(com->frameq, 0);
-            double pts = sp ? sp->pts : -1;
-            av_log(NULL, AV_LOG_WARNING, "sub is slower than video:%0.3fs,cached frame:%d,pts:%f",delta,frame_queue_nb_remaining(com->frameq),pts);
-        }
+
         double pts = com->pre_loading;
         FFSubtitleBuffer *buffer = NULL;
         int r = ff_ass_upload_buffer(com->assRenderer, pts, &buffer, 0);
@@ -163,14 +165,13 @@ static int pre_render_ass_frame(FFSubComponent *com, int serial)
             }
             pre_buffer = ff_subtitle_buffer_retain(buffer);
         } else {
-            //clean
+            //no subtitle image at this pts, skip to next step
             com->pre_loading += A_ASS_IMG_DURATION;
-            result = -5;
-            break;
+            continue;
         }
         if (!buffer) {
             com->pre_loading += A_ASS_IMG_DURATION;
-            result = -6;
+            result = -7;
             break;
         }
         
@@ -229,6 +230,7 @@ static int decode_a_frame(FFSubComponent *com, Decoder *d, AVSubtitle *pkt)
                 com->pre_loading = -1;
                 com->ass_processed = -1;
                 com->previous_uploading = -1;
+                ResetSubtitleBufferArray(&com->sub_buffer_array, NULL);
                 av_log(NULL, AV_LOG_INFO, "sub flush serial:%d\n",d->pkt_serial);
             }
         }
@@ -371,8 +373,8 @@ static int subtitle_thread(void *arg)
                         if (!ass_line)
                             continue;
                         if (!create_ass_renderer_if_need(com)) {
-                            const float begin = pts + (float)sub.start_display_time / 1000.0;
-                            float end = sub.end_display_time - sub.start_display_time;
+                            const double begin = pts + (double)sub.start_display_time / 1000.0;
+                            double end = sub.end_display_time - sub.start_display_time;
                             ff_ass_process_chunk(com->assRenderer, ass_line, begin * 1000, end);
                             com->ass_processed = begin + end/1000.0;
                             num_rect++;
@@ -381,10 +383,26 @@ static int subtitle_thread(void *arg)
                 }
                 
                 if (num_rect == 0) {
+                    //PGS clear packet: no bitmap, its pts marks the exact end of
+                    //the currently displayed subtitle. Use it to set the tail
+                    //frame's duration precisely instead of relying on the next
+                    //display packet or the SUB_MAX_KEEP_DU fallback.
+                    if (com->bitmapRenderer) {
+                        double clear_pts = pts + (double)sub.start_display_time / 1000.0;
+                        Frame *pre = frame_queue_peek_pre_writable(com->frameq);
+                        //only backfill when the clear targets that tail frame
+                        //(clear_pts must lie after its start); otherwise drop it.
+                        if (pre && clear_pts > pre->pts) {
+                            double du = clear_pts - pre->pts;
+                            //clear packet is authoritative: override even a valid
+                            //av_log(NULL, AV_LOG_DEBUG, "sub clear packet set duration:%0.3f pts:%0.3f clear_pts:%0.3f\n", du, pre->pts, clear_pts);
+                            pre->duration = du;
+                        }
+                    }
                     avsubtitle_free(&sub);
                     continue;
                 }
-                
+
                 if (com->bitmapRenderer) {
                     Frame *sp = frame_queue_peek_writable(com->frameq);
                     if (com->packetq->abort_request || !sp) {
@@ -399,7 +417,20 @@ static int subtitle_thread(void *arg)
                         sp->duration = -1;
                         Frame *pre = frame_queue_peek_pre_writable(com->frameq);
                         if (pre) {
-                            pre->duration = sp->pts - pre->pts;
+                            //Backfill the previous frame's end with this frame's start,
+                            //but only if a clear packet has not already set it precisely
+                            //(pre->duration > 0).
+                            if (pre->duration <= 0) {
+                                pre->duration = sp->pts - pre->pts;
+                                //av_log(NULL, AV_LOG_DEBUG, "fix duration:%0.3f pts:%0.3f pre->pts:%0.3f\n", pre->duration, sp->pts, pre->pts);
+                            }
+                        } else if (pts < com->min_pts) {
+                            //av_log(NULL, AV_LOG_INFO, "sub skip not in play range pts:%0.3f < min pts:%0.3f, drop\n", pts, com->min_pts);
+                            for (int k = 0; k < num_rect; k++) {
+                                ff_subtitle_buffer_release(&buffers[k]);
+                            }
+                            avsubtitle_free(&sub);
+                            continue;
                         }
                     }
                     sp->frame_serial = serial;
@@ -407,10 +438,9 @@ static int subtitle_thread(void *arg)
                     sp->height = com->sub_height;
                     sp->shown = 0;
                     
+                    bzero(sp->sub_list, sizeof(sp->sub_list));
                     if (num_rect > 0) {
                         memcpy(sp->sub_list, buffers, num_rect * sizeof(buffers[0]));
-                    } else {
-                        bzero(sp->sub_list, sizeof(sp->sub_list));
                     }
                     frame_queue_push(com->frameq);
                 } else if (++got_counter >= 3) {
@@ -431,7 +461,7 @@ static int subtitle_thread(void *arg)
     return 0;
 }
 
-static int subComponent_packet_from_frame_queue(FFSubComponent *com, float pts, FFSubtitleBufferPacket *packet, int ignore_cache)
+static int subComponent_packet_from_frame_queue(FFSubComponent *com, double pts, FFSubtitleBufferPacket *packet, int ignore_cache)
 {
     if (!com || !packet) {
         return -1;
@@ -470,7 +500,7 @@ static int subComponent_packet_from_frame_queue(FFSubComponent *com, float pts, 
         } else {
             Frame *next = frame_queue_peek_offset(com->frameq, i + 1);
             if (next) {
-                float du = next->pts - sp->pts;
+                double du = next->pts - sp->pts;
                 if (du <= 0) {
                     av_log(NULL, AV_LOG_ERROR,"sub stream drop overtime2 frame:%0.3f\n",sp->pts);
                     frame_queue_next(com->frameq);
@@ -480,7 +510,7 @@ static int subComponent_packet_from_frame_queue(FFSubComponent *com, float pts, 
                     sp->duration = du;
                 }
             } else {
-                float delta = pts - sp->pts;
+                double delta = pts - sp->pts;
                 if (delta > SUB_MAX_KEEP_DU) {
                     av_log(NULL, AV_LOG_ERROR,"sub stream drop overtime3 frame:%f\n",sp->pts);
                     frame_queue_next(com->frameq);
@@ -498,6 +528,10 @@ static int subComponent_packet_from_frame_queue(FFSubComponent *com, float pts, 
         for (int j = 0; j < sizeof(sp->sub_list)/sizeof(sp->sub_list[0]); j++) {
             FFSubtitleBuffer *sb = sp->sub_list[j];
             if (sb) {
+                if (packet->len >= SUB_REF_MAX_LEN) {
+                    av_log(NULL, AV_LOG_WARNING, "sub packet buffer fill full >= %d\n", SUB_REF_MAX_LEN);
+                    break;
+                }
                 packet->e[packet->len++] = ff_subtitle_buffer_retain(sb);
             } else {
                 break;
@@ -520,7 +554,7 @@ static int subComponent_packet_from_frame_queue(FFSubComponent *com, float pts, 
     }
 }
 
-static int subComponent_packet_ass_from_frame_queue(FFSubComponent *com, float pts, FFSubtitleBufferPacket *packet)
+static int subComponent_packet_ass_from_frame_queue(FFSubComponent *com, double pts, FFSubtitleBufferPacket *packet)
 {
     if (com->sp_changed) {
         return FF_SUB_PENDING;
@@ -528,14 +562,20 @@ static int subComponent_packet_ass_from_frame_queue(FFSubComponent *com, float p
     return subComponent_packet_from_frame_queue(com, pts, packet, 0);
 }
 
-static int subComponent_packet_for_ass(FFSubComponent *com, float pts, FFSubtitleBufferPacket *packet)
+static int subComponent_packet_for_ass(FFSubComponent *com, double pts, FFSubtitleBufferPacket *packet)
 {
     return subComponent_packet_ass_from_frame_queue(com, pts, packet);
 }
 
-int subComponent_upload_buffer(FFSubComponent *com, float pts, FFSubtitleBufferPacket *packet)
+int subComponent_upload_buffer(FFSubComponent *com, double pts, FFSubtitleBufferPacket *packet)
 {
     if (!com || com->packetq->abort_request || !packet) {
+        return -1;
+    }
+    
+    // Ignore transient upward PTS spikes (> 5s jump relative to previous_uploading)
+    if (com->previous_uploading > 0 && pts > com->previous_uploading + 5.0) {
+        av_log(NULL, AV_LOG_WARNING, "sub pts:%0.3f > prev_uploading:%0.3f + 5.0s, ignoring transient spike\n", pts, com->previous_uploading);
         return -1;
     }
     
@@ -572,7 +612,7 @@ int subComponent_upload_buffer(FFSubComponent *com, float pts, FFSubtitleBufferP
     }
 }
 
-int subComponent_open(FFSubComponent **cp, int stream_index, AVStream* stream, PacketQueue* packetq, FrameQueue* frameq, const char *enc, subComponent_retry_callback callback, void *opaque, int vw, int vh, float startTime)
+int subComponent_open(FFSubComponent **cp, int stream_index, AVStream* stream, PacketQueue* packetq, FrameQueue* frameq, const char *enc, subComponent_retry_callback callback, void *opaque, int vw, int vh, double startTime)
 {
     assert(frameq);
     assert(packetq);
@@ -684,11 +724,6 @@ int subComponent_get_stream(FFSubComponent *com)
     return -1;
 }
 
-AVCodecContext * subComponent_get_avctx(FFSubComponent *com)
-{
-    return com ? com->decoder.avctx : NULL;
-}
-
 void subComponent_update_preference(FFSubComponent *com, FSSubtitlePreference* sp)
 {
     if (!com) {
@@ -699,4 +734,12 @@ void subComponent_update_preference(FFSubComponent *com, FSSubtitlePreference* s
         com->sp = *sp;
         com->sp_changed = 1;
     }
+}
+
+void subComponent_setMixPts(FFSubComponent *com,double pts)
+{
+    if (!com) {
+        return;
+    }
+    com->min_pts = pts;
 }

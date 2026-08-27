@@ -51,11 +51,11 @@ typedef struct FFSubtitle {
     PacketQueue packetq;
     PacketQueue packetq2;
     FrameQueue frameq;
-    float delay;
-    float current_pts;
+    double delay;
+    double current_pts;
     AVFormatContext* ic_internal;
     int maxStream_internal;
-    float streamStartTime;//ic start_time (s)
+    double streamStartTime;//ic start_time (s)
     
     FFExSubtitle* exSub;
     char* pathArr[FS_EX_SUBTITLE_STREAM_MAX_COUNT];
@@ -202,7 +202,7 @@ int ff_sub_drop_old_frames(FFSubtitle *sub)
     return frame_queue_flush_old_serial(&sub->frameq, sub->packetq.serial);;
 }
 
-static int ff_sub_upload_buffer(FFSubtitle *sub, float pts, FFSubtitleBufferPacket *packet)
+static int ff_sub_upload_buffer(FFSubtitle *sub, double pts, FFSubtitleBufferPacket *packet)
 {
     if (!sub || !packet) {
         return -1;
@@ -271,7 +271,7 @@ static SDL_TextureOverlay * subtitle_upload_fbo(SDL_GPU *gpu, SDL_FBOOverlay *fb
 }
 
 //if *texture is not NULL, it was retained
-static int ff_sub_upload_texture(FFSubtitle *sub, float pts, SDL_GPU *gpu, SDL_TextureOverlay **texture)
+static int ff_sub_upload_texture(FFSubtitle *sub, double pts, SDL_GPU *gpu, SDL_TextureOverlay **texture)
 {
     if (!sub || !texture) {
         return -1;
@@ -317,7 +317,7 @@ end:
     return r;
 }
 
-int ff_sub_get_texture(FFSubtitle *sub, float pts, SDL_GPU *gpu, SDL_TextureOverlay **texture)
+int ff_sub_get_texture(FFSubtitle *sub, double pts, SDL_GPU *gpu, SDL_TextureOverlay **texture)
 {
     if (!texture) {
         return -1;
@@ -565,6 +565,7 @@ int ff_sub_update_stream_if_need(FFSubtitle *sub, int *update_stream, int *pre_s
             }
             //reset to 0
             sub->backup_charenc_idx = 0;
+            SDL_TextureOverlay_Release(&sub->preTexture);
             int err = open_any_stream(sub, sub->need_update_stream, NULL);
             if (err) {
                 r = err;
@@ -578,15 +579,6 @@ int ff_sub_update_stream_if_need(FFSubtitle *sub, int *update_stream, int *pre_s
     }
     SDL_UnlockMutex(sub->mutex);
     return r;
-}
-
-AVCodecContext * ff_sub_get_avctx(FFSubtitle *sub)
-{
-    if (!sub || !sub->com) {
-        return NULL;
-    }
-    
-    return subComponent_get_avctx(sub->com);
 }
 
 int ff_sub_get_current_stream(FFSubtitle *sub, int *pending)
@@ -665,26 +657,33 @@ int ff_sub_put_packet_backup(FFSubtitle *sub, AVPacket *pkt)
     return -1;
 }
 
-void ff_sub_seek_to(FFSubtitle *sub, float delay, float v_pts)
+void ff_sub_seek_to(FFSubtitle *sub, double delay, double v_pts)
 {
+    double wantDisplay = v_pts - delay;
+    //多往前seek2s,这样能避免往回seek后没有字幕问题，因为第一帧pgs字幕的du无法预估
+    if (wantDisplay > 2) {
+        wantDisplay -= 2;
+    }
+    if (sub->com) {
+        subComponent_setMixPts(sub->com, wantDisplay);
+    }
     if (ff_sub_current_stream_type(sub) == 2) {
-        float wantDisplay = v_pts - delay;
         SDL_LockMutex(sub->mutex);
         exSub_seek_to(sub->exSub, wantDisplay);
         SDL_UnlockMutex(sub->mutex);
     }
 }
 
-int ff_sub_set_delay(FFSubtitle *sub, float delay, float v_pts)
+int ff_sub_set_delay(FFSubtitle *sub, double delay, double v_pts)
 {
     if (!sub) {
         return -1;
     }
     
-    float wantDisplay = v_pts - delay;
+    double wantDisplay = v_pts - delay;
     //subtile's frame queue greater than can display pts
     if (sub->current_pts > wantDisplay) {
-        float diff = fabsf(delay - sub->delay);
+        double diff = fabs(delay - sub->delay);
         sub->delay = delay;
         //need seek to wantDisplay;
         int type = ff_sub_current_stream_type(sub);
@@ -710,7 +709,7 @@ int ff_sub_set_delay(FFSubtitle *sub, float delay, float v_pts)
     }
 }
 
-float ff_sub_get_delay(FFSubtitle *sub)
+double ff_sub_get_delay(FFSubtitle *sub)
 {
     return sub ? sub->delay : 0.0;
 }
@@ -770,7 +769,8 @@ int ff_sub_add_ex_subtitle(FFSubtitle *sub, const char *file_name, IjkMediaMeta 
     int already_added = 0;
     //maybe already added.
     SDL_LockMutex(sub->mutex);
-    for (int i = 0; i < sub->next_idx; i++) {
+    int i;
+    for (i = 0; i < sub->next_idx; i++) {
         char* next = sub->pathArr[i];
         if (next && (0 == av_strcasecmp(next, file_name))) {
             already_added = 1;
@@ -781,7 +781,7 @@ int ff_sub_add_ex_subtitle(FFSubtitle *sub, const char *file_name, IjkMediaMeta 
     
     if (already_added) {
         if (out_idx) {
-            *out_idx = -1;
+            *out_idx = i + FS_EX_SUBTITLE_STREAM_MIN_OFFSET;
         }
         return 1;
     }

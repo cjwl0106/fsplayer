@@ -1,3 +1,14 @@
+## tag 1.1.0
+
+- Update OpenSSL and other libraries #95
+- fix ffmpeg8 can't find libwep decoder bug
+
+## tag 1.0.9
+
+- fix some intel device display green screen or snow pixel screen bug
+- optimize subtitle logic
+- FSPlayer support sync destroy
+
 ## tag 1.0.8
 
 - fix intel flash new picture bug when use 2x speed play

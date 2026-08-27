@@ -44,7 +44,6 @@
 #include "libavutil/time.h"
 #include "libavutil/bprint.h"
 #include "libavutil/buffer.h"
-#include "libavutil/hwcontext.h"
 #include "libavformat/avformat.h"
 #if CONFIG_AVDEVICE
 #include "libavdevice/avdevice.h"
@@ -421,8 +420,6 @@ static int ff_apply_subtitle_stream_change(FFPlayer *ffp)
     int pre_stream;
     int r = ff_sub_update_stream_if_need(is->ffSub, &update_stream, &pre_stream);
     if (r > 0) {
-        AVCodecContext * avctx = ff_sub_get_avctx(is->ffSub);
-        ffp_set_subtitle_codec_info(ffp, AVCODEC_MODULE_NAME, avcodec_get_name(avctx->codec_id));
         ijkmeta_set_int64_l(ffp->meta, FSM_KEY_TIMEDTEXT_STREAM, update_stream);
         ffp_notify_msg1(ffp, FFP_MSG_SELECTED_STREAM_CHANGED);
         
@@ -435,13 +432,11 @@ static int ff_apply_subtitle_stream_change(FFPlayer *ffp)
             ff_sub_seek_to(is->ffSub, delay, sec);
         }
     } else if (r == 0) {
-        ffp_set_subtitle_codec_info(ffp, AVCODEC_MODULE_NAME, "");
         ijkmeta_set_int64_l(ffp->meta, FSM_KEY_TIMEDTEXT_STREAM, -1);
         ffp_notify_msg1(ffp, FFP_MSG_SELECTED_STREAM_CHANGED);
     } else if (r < -1) {
         //when closed pre stream,need send stream changed msg.
         if (pre_stream >= 0) {
-            ffp_set_subtitle_codec_info(ffp, AVCODEC_MODULE_NAME, "");
             ijkmeta_set_int64_l(ffp->meta, FSM_KEY_TIMEDTEXT_STREAM, -1);
             ffp_notify_msg1(ffp, FFP_MSG_SELECTED_STREAM_CHANGED);
         }
@@ -1456,6 +1451,8 @@ static int queue_picture(FFPlayer *ffp, AVFrame *src_frame, double pts, double d
                 overlay_format = SDL_FCC_YUV2;
             } else
         #endif
+        // avoid Metal display garbage color when render 3 texture on Intel Iris Graphics；intel 10.14 has the bug,some higher os hasn't
+        #if TARGET_CPU_ARM64
             if (src_format == AV_PIX_FMT_YUV420P && src_frame->color_range == AVCOL_RANGE_JPEG) {
                 overlay_format = SDL_FCC_J420;
             } else if (src_format == AV_PIX_FMT_YUV420P) {
@@ -1475,7 +1472,7 @@ static int queue_picture(FFPlayer *ffp, AVFrame *src_frame, double pts, double d
             } else if (src_format == AV_PIX_FMT_YUVA444P16 || src_format == AV_PIX_FMT_AYUV64) {
                 overlay_format = SDL_FCC_AYUV64;
             } else
-        
+        #endif
             {
                 const AVPixFmtDescriptor *pfd = av_pix_fmt_desc_get(src_format);
                 if (pfd->nb_components > 0) {
@@ -1483,33 +1480,30 @@ static int queue_picture(FFPlayer *ffp, AVFrame *src_frame, double pts, double d
                         overlay_format = SDL_FCC_P010;
                     } else {
                         overlay_format = SDL_FCC_NV12;
+                        switch (src_format) {
+                            case AV_PIX_FMT_BGRA:
+                                overlay_format = SDL_FCC_BGRA;
+                                break;
+                            case AV_PIX_FMT_BGR0:
+                                overlay_format = SDL_FCC_BGR0;
+                                break;
+                            case AV_PIX_FMT_ARGB: {
+                                overlay_format = SDL_FCC_ARGB;
+                                break;
+                            }
+                            case AV_PIX_FMT_0RGB: {
+                                overlay_format = SDL_FCC_0RGB;
+                                break;
+                            }
+                            default: {
+                                if (pfd->flags & AV_PIX_FMT_FLAG_RGB) {
+                                    overlay_format = SDL_FCC_BGRA;
+                                }
+                                break;
+                            }
+                        }
                     }
                 }
-            }
-        #endif
-        #if defined(__APPLE__) && defined(__x86_64__)
-            // Intel 集显(如 Iris Plus 640)上 Metal(CVMetalTextureCache) 渲染多平面 YUV 会
-            // 出现绿/粉花屏；改用单平面 packed YUV422 规避(单平面纹理在 Intel 上正常，与硬解
-            // 输出单平面思路一致)。按 color range 选择，使 sws 转换结果与 CVPixelBuffer 标注的
-            // range 一致：video-range -> UYVY(2vuy)，full-range -> YUV2(yuvs)。
-            // 10bit/16bit(P010/P216/P416) 一并降到 8bit UYVY——HDR 的 BT2020/PQ 信息在 color
-            // attachment 里，不随降位深丢失，渲染层仍走 HDR 还原(代价只是 8bit 量化的 banding)。
-            // 注意：RGB(BGRA/BGR0/ARGB/0RGB) 与单平面 AYUV64 本就是单平面、Intel 正常，保持不变；
-            // 尤其 AYUV64 带 alpha，转 UYVY 会丢 alpha。
-            switch (overlay_format) {
-                case SDL_FCC_I420:
-                case SDL_FCC_YV12:
-                case SDL_FCC_NV12:
-                case SDL_FCC_P010:
-                case SDL_FCC_P216:
-                case SDL_FCC_P416:
-                    overlay_format = SDL_FCC_UYVY;
-                    break;
-                case SDL_FCC_J420:
-                    overlay_format = SDL_FCC_YUV2;
-                    break;
-                default:
-                    break;
             }
         #endif
             //
@@ -1898,7 +1892,6 @@ static int configure_video_filters(FFPlayer *ffp, AVFilterGraph *graph, VideoSta
     AVFilterContext *filt_src = NULL, *filt_out = NULL, *last_filter = NULL;
     AVCodecParameters *codecpar = is->video_st->codecpar;
     AVRational fr = av_guess_frame_rate(is->ic, is->video_st, NULL);
-    const AVDictionaryEntry *e = NULL;
     AVBufferSrcParameters *par = av_buffersrc_parameters_alloc();
     if (!par)
         return AVERROR(ENOMEM);
@@ -1935,12 +1928,13 @@ static int configure_video_filters(FFPlayer *ffp, AVFilterGraph *graph, VideoSta
 //    av_strlcatf(vfilters_buf, sizeof(vfilters_buf), "hue=s=0");
 //
 //    av_log(ffp, AV_LOG_INFO, "configure_video_filters: vfilters_buf='%s', deinterlace=%d\n", vfilters_buf, ffp->deinterlace);
-
+    const AVDictionaryEntry *e = NULL;
 #if IS_FFMPEG_6
-    while ((e = av_dict_iterate(ffp->sws_dict, e))) {
+    while ((e = av_dict_iterate(ffp->sws_dict, e)))
 #else
-    while ((e = av_dict_get(ffp->sws_dict, "", e, AV_DICT_IGNORE_SUFFIX))) {
+    while ((e = av_dict_get(ffp->sws_dict, "", e, AV_DICT_IGNORE_SUFFIX)))
 #endif
+    {
         if (!strcmp(e->key, "sws_flags")) {
             av_strlcatf(sws_flags_str, sizeof(sws_flags_str), "%s=%s:", "flags", e->value);
         } else
@@ -2143,7 +2137,6 @@ static int configure_audio_filters(FFPlayer *ffp, const char *afilters, int forc
     int sample_rates[2] = { 0, -1 };
     AVFilterContext *filt_asrc = NULL, *filt_asink = NULL;
     char aresample_swr_opts[512] = "";
-    const AVDictionaryEntry *e = NULL;
     AVBPrint bp;
     char asrc_args[256];
     int ret;
@@ -2157,6 +2150,7 @@ static int configure_audio_filters(FFPlayer *ffp, const char *afilters, int forc
     is->agraph->nb_threads = filter_nbthreads;
 
     av_bprint_init(&bp, 0, AV_BPRINT_SIZE_AUTOMATIC);
+    const AVDictionaryEntry *e = NULL;
 #if IS_FFMPEG_6
     while ((e = av_dict_iterate(ffp->swr_opts, e)))
 #else
@@ -3161,51 +3155,15 @@ static int audio_open(FFPlayer *opaque, AVChannelLayout *wanted_channel_layout, 
 static enum AVPixelFormat get_hw_format(AVCodecContext *ctx,
                                         const enum AVPixelFormat *pix_fmts)
 {
-#warning metal todo rbg24
-    const enum AVPixelFormat supported_fmts[] = {AV_PIX_FMT_VIDEOTOOLBOX,AV_PIX_FMT_NV12,AV_PIX_FMT_YUV420P,AV_PIX_FMT_UYVY422,AV_PIX_FMT_RGB24,AV_PIX_FMT_ARGB,AV_PIX_FMT_0RGB,AV_PIX_FMT_BGRA,AV_PIX_FMT_BGR0};
-
+    const enum AVPixelFormat supported_fmts[] = {AV_PIX_FMT_VIDEOTOOLBOX,AV_PIX_FMT_NV12,AV_PIX_FMT_YUV420P,AV_PIX_FMT_UYVY422,AV_PIX_FMT_ARGB,AV_PIX_FMT_0RGB,AV_PIX_FMT_BGRA,AV_PIX_FMT_BGR0};
+    
     for (const enum AVPixelFormat *p = pix_fmts; *p != AV_PIX_FMT_NONE; p++) {
         for (int i = 0; i < sizeof(supported_fmts) / sizeof(enum AVPixelFormat); i++) {
-#if TARGET_CPU_ARM64
             if (*p == supported_fmts[i])
                 return *p;
-#else
-            if (*p != supported_fmts[i])
-                continue;
-            // Intel 集显(如 Iris Plus 640)上 CVMetalTextureCache 对多平面(NV12/yuv420p)的
-            // plane1(CbCr) 寻址有缺陷，会出现绿/粉色块。让 VideoToolbox 从源头直接输出单平面，
-            // 绕开多平面。做法是预建 hw_frames_ctx 指定 sw_format：videotoolbox.c 的
-            // ff_videotoolbox_common_init 检测到 hw_frames_ctx 已存在就用其 sw_format，
-            // 跳过默认的 NV12 协商。Apple Silicon(arm64) 不编译此分支，仍走 NV12 多平面零拷贝。
-            //
-            // 注意 color range：ffmpeg 的 VT 映射表里 UYVY422(2vuy) 只对应 video-range，
-            // full-range 视频必须用 BGRA(32BGRA)，否则 cv_pix_fmt_type 映射失败、硬解初始化报错。
-            if (*p == AV_PIX_FMT_VIDEOTOOLBOX && ctx->hw_device_ctx && !ctx->hw_frames_ctx) {
-                enum AVPixelFormat sw_fmt = (ctx->color_range == AVCOL_RANGE_JPEG)
-                                          ? AV_PIX_FMT_BGRA      // full-range：单平面 RGB
-                                          : AV_PIX_FMT_UYVY422;  // video-range：单平面 packed YUV
-                AVBufferRef *frames_ref = av_hwframe_ctx_alloc(ctx->hw_device_ctx);
-                if (frames_ref) {
-                    AVHWFramesContext *frames_ctx = (AVHWFramesContext *)frames_ref->data;
-                    frames_ctx->format    = AV_PIX_FMT_VIDEOTOOLBOX;
-                    frames_ctx->sw_format = sw_fmt;
-                    frames_ctx->width     = ctx->coded_width;
-                    frames_ctx->height    = ctx->coded_height;
-                    if (av_hwframe_ctx_init(frames_ref) >= 0) {
-                        ctx->hw_frames_ctx = frames_ref;
-                        ALOGI("Intel: request VideoToolbox single-plane output, sw_format=%s\n",
-                              av_get_pix_fmt_name(sw_fmt));
-                    } else {
-                        av_buffer_unref(&frames_ref);
-                        ALOGW("Intel: init single-plane hw_frames_ctx failed, fallback to default NV12\n");
-                    }
-                }
-            }
-            return *p;
-#endif
         }
     }
-
+    
     return AV_PIX_FMT_NONE;
 }
 
@@ -3238,7 +3196,6 @@ static int filter_codec_opts(const AVDictionary *opts, enum AVCodecID codec_id,
                       AVDictionary **dst, AVDictionary **opts_used)
 {
     AVDictionary    *ret = NULL;
-    const AVDictionaryEntry *t = NULL;
     int            flags = s->oformat ? AV_OPT_FLAG_ENCODING_PARAM
                                       : AV_OPT_FLAG_DECODING_PARAM;
     char          prefix = 0;
@@ -3261,6 +3218,7 @@ static int filter_codec_opts(const AVDictionary *opts, enum AVCodecID codec_id,
         av_log(NULL, AV_LOG_DEBUG, "filter_codec_opts igore media type:%d\n",st->codecpar->codec_type);
         break;
     }
+    const AVDictionaryEntry *t = NULL;
 #if IS_FFMPEG_6
     while ((t = av_dict_iterate(opts, t)))
 #else
@@ -3366,7 +3324,6 @@ static int stream_component_open(FFPlayer *ffp, int stream_index)
     const AVCodec *codec = NULL;
     const char *forced_codec_name = NULL;
     AVDictionary *opts = NULL;
-    const AVDictionaryEntry *t = NULL;
     int sample_rate;
     AVChannelLayout ch_layout = { 0 };
     int ret = 0;
@@ -3457,10 +3414,11 @@ static int stream_component_open(FFPlayer *ffp, int stream_index)
     if ((ret = avcodec_open2(avctx, codec, &opts)) < 0) {
         goto fail;
     }
+    const AVDictionaryEntry *t = NULL;
 #if IS_FFMPEG_6
-    if ((t = av_dict_iterate(opts, NULL)))
+    while ((t = av_dict_iterate(opts, t)))
 #else
-    if ((t = av_dict_get(opts, "", NULL, AV_DICT_IGNORE_SUFFIX)))
+    while ((t = av_dict_get(opts, "", t, AV_DICT_IGNORE_SUFFIX)))
 #endif
     {
         av_log(NULL, AV_LOG_ERROR, "codec Option %s not found.\n", t->key);
@@ -3539,7 +3497,6 @@ static int stream_component_open(FFPlayer *ffp, int stream_index)
             /* prepare audio output */
             if ((ret = audio_open(ffp, &ch_layout, sample_rate, &is->audio_tgt)) < 0)
                 goto fail;
-            ffp_set_audio_codec_info(ffp, AVCODEC_MODULE_NAME, avcodec_get_name(avctx->codec_id));
             is->audio_hw_buf_size = ret;
             is->audio_src = is->audio_tgt;
             is->audio_buf_size  = 0;
@@ -3731,7 +3688,6 @@ static int read_thread(void *arg)
     int64_t stream_start_time;
     int completed = 0;
     int pkt_in_play_range = 0;
-    const AVDictionaryEntry *t;
     SDL_mutex *wait_mutex = SDL_CreateMutex();
     int scan_all_pmts_set = 0;
     int64_t pkt_ts;
@@ -3797,10 +3753,11 @@ static int read_thread(void *arg)
     ffp_notify_str2(ffp, FFP_MSG_OPEN_INPUT, ic->iformat->name);
     if (scan_all_pmts_set)
         av_dict_set(&ffp->format_opts, "scan_all_pmts", NULL, AV_DICT_MATCH_CASE);
+    const AVDictionaryEntry *t = NULL;
 #if IS_FFMPEG_6
-    if ((t = av_dict_iterate(ffp->format_opts, NULL)))
+    while ((t = av_dict_iterate(ffp->format_opts, t)))
 #else
-    if ((t = av_dict_get(ffp->format_opts, "", NULL, AV_DICT_IGNORE_SUFFIX)))
+    while ((t = av_dict_get(ffp->format_opts, "", t, AV_DICT_IGNORE_SUFFIX)))
 #endif
     {
         av_log(NULL, AV_LOG_ERROR, "format Option %s not found.\n", t->key);
@@ -3889,9 +3846,6 @@ static int read_thread(void *arg)
         AVStream *st = ic->streams[i];
         enum AVMediaType type = st->codecpar->codec_type;
         st->discard = AVDISCARD_ALL;
-        if (type >= 0 && ffp->wanted_stream_spec[type] && st_index[type] == -1)
-            if (avformat_match_stream_specifier(ic, st, ffp->wanted_stream_spec[type]) > 0)
-                st_index[type] = i;
 
         // choose first h264
         if (type == AVMEDIA_TYPE_VIDEO) {
@@ -5006,33 +4960,7 @@ void ffp_set_option_intptr(FFPlayer *ffp, int opt_category, const char *name, ui
     av_dict_set_intptr(dict, name, value, 0);
 }
 
-int ffp_get_video_codec_info(FFPlayer *ffp, char **codec_info)
-{
-    if (!codec_info)
-        return -1;
 
-    // FIXME: not thread-safe
-    if (ffp->video_codec_info) {
-        *codec_info = strdup(ffp->video_codec_info);
-    } else {
-        *codec_info = NULL;
-    }
-    return 0;
-}
-
-int ffp_get_audio_codec_info(FFPlayer *ffp, char **codec_info)
-{
-    if (!codec_info)
-        return -1;
-
-    // FIXME: not thread-safe
-    if (ffp->audio_codec_info) {
-        *codec_info = strdup(ffp->audio_codec_info);
-    } else {
-        *codec_info = NULL;
-    }
-    return 0;
-}
 
 static void ffp_show_dict(FFPlayer *ffp, const char *tag, AVDictionary *dict)
 {
@@ -5478,27 +5406,6 @@ void ffp_check_buffering_l(FFPlayer *ffp)
 int ffp_video_thread(FFPlayer *ffp)
 {
     return ffplay_video_thread(ffp);
-}
-
-void ffp_set_video_codec_info(FFPlayer *ffp, const char *module, const char *codec)
-{
-    av_freep(&ffp->video_codec_info);
-    ffp->video_codec_info = av_asprintf("%s, %s", module ? module : "", codec ? codec : "");
-    av_log(ffp, AV_LOG_INFO, "VideoCodec: %s\n", ffp->video_codec_info);
-}
-
-void ffp_set_audio_codec_info(FFPlayer *ffp, const char *module, const char *codec)
-{
-    av_freep(&ffp->audio_codec_info);
-    ffp->audio_codec_info = av_asprintf("%s, %s", module ? module : "", codec ? codec : "");
-    av_log(ffp, AV_LOG_INFO, "AudioCodec: %s\n", ffp->audio_codec_info);
-}
-
-void ffp_set_subtitle_codec_info(FFPlayer *ffp, const char *module, const char *codec)
-{
-    av_freep(&ffp->subtitle_codec_info);
-    ffp->subtitle_codec_info = av_asprintf("%s, %s", module ? module : "", codec ? codec : "");
-    av_log(ffp, AV_LOG_INFO, "SubtitleCodec: %s\n", ffp->subtitle_codec_info);
 }
 
 void ffp_set_playback_rate(FFPlayer *ffp, float rate)

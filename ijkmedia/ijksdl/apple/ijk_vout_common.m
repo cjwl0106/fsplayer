@@ -21,3 +21,20 @@
  */
 
 #import "ijk_vout_common.h"
+#import <VideoToolbox/VideoToolbox.h>
+#import <CoreMedia/CoreMedia.h>
+
+// 手动补全 AV1 FourCC 标识符定义
+#ifndef kCMVideoCodecType_AV1
+#define kCMVideoCodecType_AV1 'av01'
+#endif
+
+int is_videotoolbox_supported_av1(void)
+{
+    return VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1);
+}
+
+int is_videotoolbox_supported_hevc(void)
+{
+    return VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC);
+}

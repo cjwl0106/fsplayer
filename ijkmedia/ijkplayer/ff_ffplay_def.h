@@ -479,7 +479,6 @@ typedef struct FFPlayer {
     int audio_disable;
     int video_disable;
     int subtitle_disable;
-    const char* wanted_stream_spec[AVMEDIA_TYPE_NB];
     int seek_by_bytes;
     int display_disable;
     int show_status;
@@ -517,9 +516,6 @@ typedef struct FFPlayer {
     int sar_num;
     int sar_den;
 
-    char *video_codec_info;
-    char *audio_codec_info;
-    char *subtitle_codec_info;
     Uint32 overlay_format;
 
     int prepared;
@@ -640,7 +636,6 @@ inline static void ffp_reset_internal(FFPlayer *ffp)
     av_freep(&ffp->input_filename);
     ffp->audio_disable          = 0;
     ffp->video_disable          = 0;
-    memset(ffp->wanted_stream_spec, 0, sizeof(ffp->wanted_stream_spec));
     ffp->seek_by_bytes          = -1;
     ffp->display_disable        = 0;
     ffp->show_status            = -1;
@@ -688,10 +683,6 @@ inline static void ffp_reset_internal(FFPlayer *ffp)
     
     ffp->sar_num                = 0;
     ffp->sar_den                = 0;
-
-    av_freep(&ffp->video_codec_info);
-    av_freep(&ffp->audio_codec_info);
-    av_freep(&ffp->subtitle_codec_info);
 #ifdef __APPLE__
     ffp->overlay_format         = SDL_FCC__GLES2;
 #else

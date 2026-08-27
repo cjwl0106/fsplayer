@@ -25,6 +25,8 @@
 #import "MRPlayerSettingsViewController.h"
 #import "MRPlaylistViewController.h"
 #import "MRCocoaBindingUserDefault.h"
+#import "MRM3UParser.h"
+#import "MRMediaItem.h"
 #import <objc/runtime.h>
 
 static NSString* lastPlayedKey = @"__lastPlayedKey";
@@ -102,12 +104,12 @@ static NSString *MRFormatPlayedTime(double currentPosition, double duration) {
 @property (nonatomic, strong) FSPlayer * player;
 @property (nonatomic, strong) NSMutableArray *playList;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSData *> *playlistBookmarks;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSDictionary *> *playlistMeta;
 @property (nonatomic, strong) NSMutableArray *subtitles;
 @property (nonatomic, assign) int lastSubIdx;
 
 @property (nonatomic, copy) NSString *playingUrl;
 @property (nonatomic, weak) NSTimer *tickTimer;
-@property (nonatomic, assign, getter=isUsingHardwareAccelerate) BOOL usingHardwareAccelerate;
 @property (nonatomic, strong, nullable) NSWindow *extraRenderWindow;
 
 @property (nonatomic, assign) BOOL shouldShowHudView;
@@ -357,7 +359,6 @@ typedef NS_ENUM(NSInteger, MRSidebarType) {
     
     self.playedTimeLb.stringValue = @"--:-- / --:--";
     
-    self.usingHardwareAccelerate = [self preferHW];
     [self loadSavedPlaylist];
 }
 
@@ -785,15 +786,101 @@ typedef NS_ENUM(NSInteger, MRSidebarType) {
     }
     
     if ([videos count] > 0) {
+        // Check if any URL is an M3U playlist
+        BOOL hasM3U = NO;
+        for (NSString *link in videos) {
+            if ([MRM3UParser isM3UURL:link]) {
+                hasM3U = YES;
+                break;
+            }
+        }
+        
+        if (hasM3U) {
+            // Parse M3U playlists and expand into individual stream URLs
+            [self expandM3UPlaylists:videos];
+            return;
+        }
+        
         // 开始播放
         [self.playList removeAllObjects];
         [self.playlistBookmarks removeAllObjects];
+        [self.playlistMeta removeAllObjects];
         [self.playList addObjectsFromArray:videos];
         [self savePlaylist];
         [self onStop];
         [self playFirstIfNeed];
     }
 }
+
+#pragma mark - M3U Playlist Expansion
+
+- (void)expandM3UPlaylists:(NSArray<NSString *> *)urls
+{
+    [self.playList removeAllObjects];
+    [self.playlistMeta removeAllObjects];
+    [self onStop];
+    
+    __block NSInteger pendingCount = urls.count;
+    __block NSMutableArray<NSString *> *allURLs = [NSMutableArray array];
+    __block NSMutableDictionary<NSString *, NSDictionary *> *allMeta = [NSMutableDictionary dictionary];
+    
+    __weakSelf__
+    for (NSString *url in urls) {
+        if ([MRM3UParser isM3UURL:url]) {
+            [MRM3UParser parseM3UURL:url completion:^(NSArray<NSDictionary *> *items, NSError *error) {
+                __strongSelf__
+                if (items.count > 0) {
+                    for (NSDictionary *item in items) {
+                        NSString *itemURL = item[@"url"];
+                        if (itemURL) {
+                            [allURLs addObject:itemURL];
+                            allMeta[itemURL] = @{
+                                @"title": item[@"title"] ?: @"",
+                                @"logo": item[@"logo"] ?: @"",
+                                @"group": item[@"group"] ?: @""
+                            };
+                        }
+                    }
+                } else {
+                    // Fallback: add the M3U URL itself as a single item
+                    [allURLs addObject:url];
+                    NSLog(@"[M3U] Failed to parse playlist, adding as raw URL: %@ (error: %@)", url, error);
+                }
+                
+                pendingCount--;
+                if (pendingCount == 0) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [self finishM3UExpansion:allURLs metadata:allMeta];
+                    });
+                }
+            }];
+        } else {
+            // Non-M3U URL — add directly
+            [allURLs addObject:url];
+            pendingCount--;
+        }
+    }
+    
+    // If all URLs were non-M3U (or empty), finish immediately
+    if (pendingCount == 0) {
+        [self finishM3UExpansion:allURLs metadata:allMeta];
+    }
+}
+
+- (void)finishM3UExpansion:(NSArray<NSString *> *)urls
+                  metadata:(NSDictionary<NSString *, NSDictionary *> *)metadata
+{
+    if (urls.count == 0) {
+        [self updatePlaylistView];
+        return;
+    }
+    
+    [self.playList addObjectsFromArray:urls];
+    [self.playlistMeta addEntriesFromDictionary:metadata];
+    [self playFirstIfNeed];
+}
+
+#pragma mark - Sidebar
 
 - (MRPlayerSettingsViewController *)findSettingViewController {
     MRPlayerSettingsViewController *settings = nil;
@@ -823,6 +910,7 @@ typedef NS_ENUM(NSInteger, MRSidebarType) {
                     [self.playList removeObjectAtIndex:index];
                     if (removedUrl) {
                         [self.playlistBookmarks removeObjectForKey:removedUrl];
+                        [self.playlistMeta removeObjectForKey:removedUrl];
                     }
                     if ([removedUrl isEqualToString:self.playingUrl]) {
                         if ([self.playList count] > 0) {
@@ -841,6 +929,7 @@ typedef NS_ENUM(NSInteger, MRSidebarType) {
                 __strongSelf__
                 [self.playList removeAllObjects];
                 [self.playlistBookmarks removeAllObjects];
+                [self.playlistMeta removeAllObjects];
                 [self doStopPlay];
                 [self savePlaylist];
                 [self updatePlaylistView];
@@ -914,7 +1003,9 @@ typedef NS_ENUM(NSInteger, MRSidebarType) {
 - (void)updatePlaylistView
 {
     if (self.playlistVC) {
-        [self.playlistVC updatePlaylist:self.playList currentlyPlaying:self.playingUrl];
+        [self.playlistVC updatePlaylist:self.playList
+                       currentlyPlaying:self.playingUrl
+                               metadata:self.playlistMeta];
     }
 }
 
@@ -1378,6 +1469,14 @@ typedef NS_ENUM(NSInteger, MRSidebarType) {
     return _subtitles;
 }
 
+- (NSMutableDictionary<NSString *, NSDictionary *> *)playlistMeta
+{
+    if (!_playlistMeta) {
+        _playlistMeta = [NSMutableDictionary dictionary];
+    }
+    return _playlistMeta;
+}
+
 - (void)perpareFSPlayer:(NSString *)urlStr hwaccel:(BOOL)hwaccel isLive:(BOOL)isLive
 {
     if (self.playingUrl) {
@@ -1730,8 +1829,7 @@ typedef NS_ENUM(NSInteger, MRSidebarType) {
 - (void)fsPlayerVideoDecoderFatal:(NSNotification *)notifi
 {
     if (self.player == notifi.object) {
-        if (self.isUsingHardwareAccelerate) {
-            self.usingHardwareAccelerate = NO;
+        if ([self preferHW]) {
             [MRCocoaBindingUserDefault setValue:@(NO) forKey:@"use_hw"];
             NSLog(@"decoder fatal:%@;close videotoolbox hwaccel and fall back to software decoder.", notifi.userInfo);
             [self.player switchVideoDecoder:NO];
@@ -2006,8 +2104,12 @@ typedef NS_ENUM(NSInteger, MRSidebarType) {
 #warning 根据地址，动态修改
     BOOL isLive = [urlStr hasPrefix:@"rtmp"] || [urlStr hasPrefix:@"rtsp"];
 //    isLive = NO;
-    [self perpareFSPlayer:urlStr hwaccel:self.isUsingHardwareAccelerate isLive:isLive];
-    NSString *videoName = [urlStr lastPathComponent];
+    [self perpareFSPlayer:urlStr hwaccel:[self preferHW] isLive:isLive];
+    // Use metadata title if available, otherwise fall back to lastPathComponent
+    NSString *metaTitle = self.playlistMeta[urlStr][@"title"];
+    NSString *rawName = (metaTitle.length > 0) ? metaTitle : ([urlStr lastPathComponent] ?: urlStr);
+    NSString *decodedName = [rawName stringByRemovingPercentEncoding];
+    NSString *videoName = (decodedName.length > 0) ? decodedName : rawName;
     
     NSInteger idx = [self.playList indexOfObject:self.playingUrl] + 1;
     
@@ -2109,6 +2211,46 @@ typedef NS_ENUM(NSInteger, MRSidebarType) {
                     continue;
                 }
                 [videos addObject:u];
+            }
+        } else if ([[[url pathExtension] lowercaseString] isEqualToString:@"m3u"] ||
+                   [[[url pathExtension] lowercaseString] isEqualToString:@"m3u8"]) {
+            // Parse local M3U playlist
+            NSString *filePath = [url path];
+            NSString *content = [NSString stringWithContentsOfFile:filePath
+                                                          encoding:NSUTF8StringEncoding
+                                                             error:nil];
+            if (!content) {
+                content = [NSString stringWithContentsOfFile:filePath
+                                                    encoding:NSISOLatin1StringEncoding
+                                                       error:nil];
+            }
+            if (content) {
+                NSArray<NSDictionary *> *items = [MRM3UParser parseM3UContent:content];
+                for (NSDictionary *item in items) {
+                    NSString *itemURL = item[@"url"];
+                    if (!itemURL) continue;
+                    // Resolve relative URLs against the M3U file's directory
+                    if (![itemURL hasPrefix:@"http://"] && ![itemURL hasPrefix:@"https://"] &&
+                        ![itemURL hasPrefix:@"rtmp://"] && ![itemURL hasPrefix:@"rtsp://"] &&
+                        ![itemURL hasPrefix:@"/"]) {
+                        NSString *dir = [[url path] stringByDeletingLastPathComponent];
+                        itemURL = [dir stringByAppendingPathComponent:itemURL];
+                    }
+                    NSString *existing = [self existingInPlayList:itemURL];
+                    if (existing || [videos containsObject:itemURL]) {
+                        if (existing && !firstOpenedExistingVideo) {
+                            firstOpenedExistingVideo = existing;
+                        }
+                        continue;
+                    }
+                    [videos addObject:itemURL];
+                    // Store metadata
+                    self.playlistMeta[itemURL] = @{
+                        @"title": item[@"title"] ?: @"",
+                        @"logo": item[@"logo"] ?: @"",
+                        @"group": item[@"group"] ?: @""
+                    };
+                }
             }
         } else if ([[[url pathExtension] lowercaseString] isEqualToString:@"zlist"]) {
             for (NSString *u in [MRUtil parseZPlayList:url]) {
@@ -2413,7 +2555,6 @@ typedef NS_ENUM(NSInteger, MRSidebarType) {
 
 - (void)retry
 {
-    self.usingHardwareAccelerate = [self preferHW];
     float playbackRate = self.player.playbackRate;
     
     NSString *url = self.playingUrl;
@@ -2483,7 +2624,6 @@ typedef NS_ENUM(NSInteger, MRSidebarType) {
 
 - (void)resetPreferenceEachPlay
 {
-    self.usingHardwareAccelerate = [self preferHW];
     self.player.view.allowHDRDirectDisplay = [MRCocoaBindingUserDefault open_hdr];
 
     [MRCocoaBindingUserDefault setValue:@(0.0) forKey:@"subtitle_delay"];
@@ -2890,7 +3030,6 @@ typedef NS_ENUM(NSInteger, MRSidebarType) {
     [[MRCocoaBindingUserDefault sharedDefault] onChange:^(id _Nonnull v, BOOL * _Nonnull r) {
         __strongSelf__
         BOOL use_hw = [v boolValue];
-        self.usingHardwareAccelerate = use_hw;
         if (self.player) {
             [self.player switchVideoDecoder:use_hw];
         } else {
@@ -2919,7 +3058,6 @@ typedef NS_ENUM(NSInteger, MRSidebarType) {
         }
         if (mode > 0 && [MRCocoaBindingUserDefault use_hw]) {
             [MRCocoaBindingUserDefault setUse_hw:NO];
-            self.usingHardwareAccelerate = NO;
         }
     } forKey:@"deinterlace"];
 

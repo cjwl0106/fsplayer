@@ -29,16 +29,11 @@
 typedef CGRect NSRect;
 #endif
 
-//TARGET_CPU_ARM64
-#define USE_METAL_TEXTURE_CACHE 1
-
 @interface FSMetalView ()
 
 // The command queue used to pass commands to the device.
 @property (nonatomic, strong) id<MTLCommandQueue>commandQueue;
-#if USE_METAL_TEXTURE_CACHE
 @property (nonatomic, assign) CVMetalTextureCacheRef pictureTextureCache;
-#endif
 @property (atomic, strong) FSMetalRenderer *picturePipeline;
 // HEIC tile-grid 合成管线：把多个 tile 合成成一张完整画面缓存到 attach。
 @property (atomic, strong) FSMetalTileGridPipeline *tileGridPipeline;
@@ -93,12 +88,10 @@ typedef CGRect NSRect;
     [_displayLinkWrapper invalidate];
     _displayLinkWrapper = nil;
     [[NSNotificationCenter defaultCenter] removeObserver:self];
-#if USE_METAL_TEXTURE_CACHE
     if (_pictureTextureCache) {
         CFRelease(_pictureTextureCache);
         _pictureTextureCache = NULL;
     }
-#endif
 }
 
 - (BOOL)prepareMetal
@@ -126,14 +119,12 @@ typedef CGRect NSRect;
         ALOGE("Can't Create Metal Device.");
         return NO;
     }
-#if USE_METAL_TEXTURE_CACHE
     CVReturn ret = CVMetalTextureCacheCreate(kCFAllocatorDefault, NULL, self.device, NULL, &_pictureTextureCache);
     if (ret != kCVReturnSuccess) {
-        ALOGE("Create MetalTextureCache Failed:%d.",ret);
-        self.device = nil;
-        return NO;
+        //cache 创建失败不影响播放,纹理生成会自动回退 CPU 上传
+        ALOGE("Create MetalTextureCache Failed:%d, fallback to CPU texture upload.",ret);
+        _pictureTextureCache = NULL;
     }
-#endif
     // default is kCAGravityResize,the content will be filled to new bounds when change view's frame by Implicit Animation
 #if TARGET_OS_OSX
     //#76 设置了 kCAGravityCenter 之后发现 macOS 外接1倍屏会出现画面显示到中央，无法填充满的问题，Retina屏幕没有问题
@@ -579,6 +570,39 @@ typedef CGRect NSRect;
     [self.subPipeline drawTexture:subTexture encoder:renderEncoder];
 }
 
+// 合成成一张 BGRA 纹理并缓存到 attach 上，转成普通单帧。
+// 合成交给 FSMetalTileGridPipeline；之后旋转/缩放/调色/快照都走单帧路径作用于整张图，
+// 避免逐 tile 旋转导致画面错乱。合成只做一次：完成后 tilePieces 置空、videoPicture 被填充。
+// 注意：必须在持有 renderSnapshotLock 时调用（与显示/快照共用纹理缓存，需串行）。
+- (BOOL)ensureTileGridComposited:(FSOverlayAttach *)attach
+{
+    if (attach.tilePieces.count == 0) {
+        // 已合成过，或本就不是 tile-grid。
+        return YES;
+    }
+
+    if (!self.tileGridPipeline) {
+        self.tileGridPipeline = [[FSMetalTileGridPipeline alloc] initWithDevice:self.device];
+    }
+
+    // 合成（或命中缓存）后直接拿到可显示的纹理，不再每帧重新生成纹理。
+    id<MTLTexture> texture = [self.tileGridPipeline compositeTileGrid:attach
+                                                         textureCache:self.pictureTextureCache
+                                                         commandQueue:self.commandQueue];
+    if (!texture) {
+        return NO;
+    }
+
+    // 转成普通单帧：直接用合成纹理；videoPicture 仅用于建立 BGRA 显示管线（按像素格式选 shader）。
+    // 合成结果即显示尺寸，pixelW/H 与 w/h 相等（采样时无需裁剪）。
+    attach.videoTextures = @[texture];
+    attach.videoPicture = CVPixelBufferRetain(self.tileGridPipeline.compositedPixelBuffer); // 由 attach dealloc 释放
+    attach.pixelW = attach.w;
+    attach.pixelH = attach.h;
+    attach.tilePieces = nil; // 释放各 tile 的 pixelBuffer/textures
+    return YES;
+}
+
 #pragma mark - Display Link & Core Rendering Flow
 
 - (void)setNeedsRefreshCurrentPic
@@ -660,6 +684,7 @@ typedef CGRect NSRect;
     //use current DisplayLink thread
     [self draw];
 }
+
 // [self draw] driven
 - (void)drawRect:(NSRect)dirtyRect
 {
@@ -717,11 +742,9 @@ typedef CGRect NSRect;
     
     //generate textures (single-frame path)
     if (!currentAttach.videoTextures) {
-        CVMetalTextureCacheRef textureCache = NULL;
-    #if USE_METAL_TEXTURE_CACHE
-        textureCache = _pictureTextureCache;
-    #endif
-        currentAttach.videoTextures = [FSMetalTextureUtils doGenerateTexture:currentAttach.videoPicture textureCache:textureCache device:self.device];
+        NSMutableArray *cvTextures = nil;
+        currentAttach.videoTextures = [FSMetalTextureUtils doGenerateTexture:currentAttach.videoPicture textureCache:self.pictureTextureCache device:self.device outCVTextures:&cvTextures];
+        currentAttach.videoCVTextures = cvTextures;
     }
     
     if (self.displayDelegate && [self.displayDelegate respondsToSelector:@selector(videoRenderingDidDisplay:attach:)]) {
@@ -871,11 +894,9 @@ typedef CGRect NSRect;
     CGImageRef result = [self.offscreenRendering snapshot:viewport device:self.device commandBuffer:commandBuffer doUploadPicture:^(id<MTLRenderCommandEncoder> _Nonnull renderEncoder) {
         
         if (!attach.videoTextures) {
-            CVMetalTextureCacheRef textureCache = NULL;
-        #if USE_METAL_TEXTURE_CACHE
-            textureCache = self.pictureTextureCache;
-        #endif
-            attach.videoTextures = [FSMetalTextureUtils doGenerateTexture:attach.videoPicture textureCache:textureCache device:self.device];
+            NSMutableArray *cvTextures = nil;
+            attach.videoTextures = [FSMetalTextureUtils doGenerateTexture:attach.videoPicture textureCache:self.pictureTextureCache device:self.device outCVTextures:&cvTextures];
+            attach.videoCVTextures = cvTextures;
         }
         
         [self encodePicture:attach
@@ -976,11 +997,9 @@ typedef CGRect NSRect;
     id<MTLCommandBuffer> commandBuffer = [_commandQueue commandBuffer];
     CGImageRef result = [self.offscreenRendering snapshot:drawableSize device:self.device commandBuffer:commandBuffer doUploadPicture:^(id<MTLRenderCommandEncoder> _Nonnull renderEncoder) {
         if (!attach.videoTextures) {
-            CVMetalTextureCacheRef textureCache = NULL;
-        #if USE_METAL_TEXTURE_CACHE
-            textureCache = self.pictureTextureCache;
-        #endif
-            attach.videoTextures = [FSMetalTextureUtils doGenerateTexture:attach.videoPicture textureCache:textureCache device:self.device];
+            NSMutableArray *cvTextures = nil;
+            attach.videoTextures = [FSMetalTextureUtils doGenerateTexture:attach.videoPicture textureCache:self.pictureTextureCache device:self.device outCVTextures:&cvTextures];
+            attach.videoCVTextures = cvTextures;
         }
         CGSize ratio = [self computeNormalizedVerticesRatio:attach drawableSize:drawableSize];
         [self encodePicture:attach
@@ -1016,81 +1035,14 @@ typedef CGRect NSRect;
 }
 
 #if TARGET_OS_IOS || TARGET_OS_TV
-
-- (void)applicationDidEnterBackground {
-    self.isEnterBackground = YES;
-    _displayLinkWrapper.paused = YES;
-}
-
-- (void)applicationWillEnterForeground {
-    self.isEnterBackground = NO;
-    _displayLinkWrapper.paused = NO;
-}
-
 - (UIImage *)snapshot
 {
     CGImageRef cgImg = [self snapshot:FSSnapshotTypeScreen];
     return [[UIImage alloc]initWithCGImage:cgImg];
 }
-
-- (void)layoutSubviews
-{
-    [super layoutSubviews];
-    
-    if (!CGSizeEqualToSize(self.drawableSize, self.preferredDrawableSize)) {
-        [self setNeedsRefreshCurrentPic];
-    }
-}
-
 #else
 
-- (void)resizeWithOldSuperviewSize:(NSSize)oldSize
-{
-    [super resizeWithOldSuperviewSize:oldSize];
-    [self setNeedsRefreshCurrentPic];
-}
-
 #endif
-
-#pragma mark HEIC tile-grid
-
-// 合成成一张 BGRA 纹理并缓存到 attach 上，转成普通单帧。
-// 合成交给 FSMetalTileGridPipeline；之后旋转/缩放/调色/快照都走单帧路径作用于整张图，
-// 避免逐 tile 旋转导致画面错乱。合成只做一次：完成后 tilePieces 置空、videoPicture 被填充。
-// 注意：必须在持有 renderSnapshotLock 时调用（与显示/快照共用纹理缓存，需串行）。
-- (BOOL)ensureTileGridComposited:(FSOverlayAttach *)attach
-{
-    if (attach.tilePieces.count == 0) {
-        // 已合成过，或本就不是 tile-grid。
-        return YES;
-    }
-
-    if (!self.tileGridPipeline) {
-        self.tileGridPipeline = [[FSMetalTileGridPipeline alloc] initWithDevice:self.device];
-    }
-
-    CVMetalTextureCacheRef textureCache = NULL;
-#if USE_METAL_TEXTURE_CACHE
-    textureCache = _pictureTextureCache;
-#endif
-
-    // 合成（或命中缓存）后直接拿到可显示的纹理，不再每帧重新生成纹理。
-    id<MTLTexture> texture = [self.tileGridPipeline compositeTileGrid:attach
-                                                        textureCache:textureCache
-                                                        commandQueue:self.commandQueue];
-    if (!texture) {
-        return NO;
-    }
-
-    // 转成普通单帧：直接用合成纹理；videoPicture 仅用于建立 BGRA 显示管线（按像素格式选 shader）。
-    // 合成结果即显示尺寸，pixelW/H 与 w/h 相等（采样时无需裁剪）。
-    attach.videoTextures = @[texture];
-    attach.videoPicture = CVPixelBufferRetain(self.tileGridPipeline.compositedPixelBuffer); // 由 attach dealloc 释放
-    attach.pixelW = attach.w;
-    attach.pixelH = attach.h;
-    attach.tilePieces = nil; // 释放各 tile 的 pixelBuffer/textures
-    return YES;
-}
 
 #pragma mark - Property Setters & Informational Getters
 
@@ -1253,21 +1205,7 @@ typedef CGRect NSRect;
 - (void)screenParametersDidChange:(NSNotification *)notification {
     [self updateHDRDisplayMode];
 }
-#endif
 
-#if TARGET_OS_IOS
-- (void)didMoveToWindow {
-    [super didMoveToWindow];
-    if (self.window) {
-        if (@available(iOS 16.0, *)) {
-            [self updateHDRDisplayMode];
-        } else {
-            // Fallback on earlier versions
-        }
-    }
-}
-#endif
-#if TARGET_OS_OSX
 - (NSView *)hitTest:(NSPoint)point
 {
     for (NSView *sub in [self subviews]) {
@@ -1289,10 +1227,50 @@ typedef CGRect NSRect;
 {
     return YES;
 }
+
+- (void)resizeWithOldSuperviewSize:(NSSize)oldSize
+{
+    [super resizeWithOldSuperviewSize:oldSize];
+    [self setNeedsRefreshCurrentPic];
+}
+
 #else
+
+- (void)layoutSubviews
+{
+    [super layoutSubviews];
+    
+    if (!CGSizeEqualToSize(self.drawableSize, self.preferredDrawableSize)) {
+        [self setNeedsRefreshCurrentPic];
+    }
+}
+
 - (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event
 {
     return NO;
+}
+
+- (void)applicationDidEnterBackground {
+    self.isEnterBackground = YES;
+    _displayLinkWrapper.paused = YES;
+}
+
+- (void)applicationWillEnterForeground {
+    self.isEnterBackground = NO;
+    _displayLinkWrapper.paused = NO;
+}
+#endif
+
+#if TARGET_OS_IOS
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    if (self.window) {
+        if (@available(iOS 16.0, *)) {
+            [self updateHDRDisplayMode];
+        } else {
+            // Fallback on earlier versions
+        }
+    }
 }
 #endif
 

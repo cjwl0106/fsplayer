@@ -38,6 +38,7 @@
 #include "../ijkmedia/ijkplayer/apple/ijkplayer_ios.h"
 #include "../ijkmedia/ijkplayer/ijkmeta.h"
 #include "../ijkmedia/ijkplayer/ff_ffmsg_queue.h"
+#include "ijksdl/apple/ijk_vout_common.h"
 
 static void (^_logHandler)(FSLogLevel level, NSString *tag, NSString *msg);
 
@@ -119,7 +120,7 @@ static void (^_logHandler)(FSLogLevel level, NSString *tag, NSString *msg);
 @synthesize isVideoSync = _isVideoSync;
 @synthesize subtitlePreference = _subtitlePreference;
 
-static void FSPlayerSafeDestroy(FSPlayer *player) {
+static void FSPlayerSafeDestroy(FSPlayer *player, BOOL synchronous) {
     __block IjkMediaPlayer *mediaPlayer = player->_mediaPlayer;
     if (!mediaPlayer) {
         return;
@@ -166,7 +167,9 @@ static void FSPlayerSafeDestroy(FSPlayer *player) {
         dispatch_async(dispatch_get_main_queue(), UIHandler);
     }
     
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+    NSLog(@"ijkmp will shutdown sync:%d", synchronous);
+    
+    void (^destroyBlock)(void) = ^{
         ijkmp_stop(mediaPlayer);
         ijkmp_shutdown(mediaPlayer);
         ijkmp_dec_ref_p(&mediaPlayer);
@@ -177,7 +180,13 @@ static void FSPlayerSafeDestroy(FSPlayer *player) {
             CFRelease((__bridge CFTypeRef)weakHolder);
             weakHolder = nil;
         }
-    });
+    };
+    
+    if (synchronous) {
+        destroyBlock();
+    } else {
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), destroyBlock);
+    }
 }
 
 - (void)setScreenOn: (BOOL)on
@@ -255,15 +264,6 @@ static void FSPlayerSafeDestroy(FSPlayer *player) {
     }
     
     ijkmp_set_option(_mediaPlayer, FSMP_OPT_CATEGORY_PLAYER, "overlay-format", "fcc-_es2");
-    //ijkmp_set_option(_mediaPlayer,FSMP_OPT_CATEGORY_FORMAT,"safe", 0);
-    //ijkmp_set_option(_mediaPlayer,FSMP_OPT_CATEGORY_PLAYER,"protocol_whitelist","ffconcat,file,http,https");
-    //httpproxy
-    const char *default_p_whitelist = "concat,http,tcp,https,crypto,tls,file,bluray,smb2,dvd,rtmp,rtsp,rtp,srtp,udp";
-    if (options.protocolWhitelist.length > 0) {
-        NSString *whitelist = [[NSString stringWithUTF8String:default_p_whitelist] stringByAppendingFormat:@",%@",options.protocolWhitelist];
-        default_p_whitelist = [whitelist UTF8String];
-    }
-    ijkmp_set_option(_mediaPlayer, FSMP_OPT_CATEGORY_FORMAT, "protocol_whitelist", default_p_whitelist);
     
     _subtitlePreference = fs_subtitle_default_preference();
     
@@ -375,7 +375,7 @@ static void FSPlayerSafeDestroy(FSPlayer *player) {
 
 - (void)dealloc
 {
-    FSPlayerSafeDestroy(self);
+    FSPlayerSafeDestroy(self, NO);
     
     av_log(NULL, AV_LOG_DEBUG, "FSPlayer dealloc\n");
 }
@@ -486,12 +486,12 @@ static void FSPlayerSafeDestroy(FSPlayer *player) {
     ijkmp_stop(_mediaPlayer);
 }
 
-- (void)shutdown
+- (void)shutdownSync:(BOOL)sync
 {
     if (!_mediaPlayer)
         return;
     
-    FSPlayerSafeDestroy(self);
+    FSPlayerSafeDestroy(self, sync);
     // FSPlayerSafeDestroy会异步调用ijkmp_stop，这里需要及时更新下
     if ([NSThread isMainThread]) {
         [self updateAndNotifyPlaybackScheduleWithState:MP_STATE_STOPPED];
@@ -502,6 +502,11 @@ static void FSPlayerSafeDestroy(FSPlayer *player) {
     }
 
     [self didShutdown];
+}
+
+- (void)shutdown
+{
+    [self shutdownSync:NO];
 }
 
 - (void)didShutdown
@@ -669,6 +674,16 @@ void ffp_apple_log_extra_print(int level, const char *tag, const char *fmt, ...)
         [codecArr addObject:dic];
     }
     return [codesByType copy];
+}
+
++ (BOOL)isHardwareDecodeSupportedForHEVC
+{
+    static dispatch_once_t onceToken;
+    static BOOL supported = NO;
+    dispatch_once(&onceToken, ^{
+        supported = is_videotoolbox_supported_hevc();
+    });
+    return supported;
 }
 
 + (NSString *)playerVersion
@@ -2462,7 +2477,7 @@ static int ijkff_audio_samples_callback(void *opaque, int16_t *samples, int samp
     }
 }
 
-# pragma mark set audio channel
+#pragma mark set audio channel
 
 - (void)setAudioChannel:(FSAudioChannel)config
 {
@@ -2492,7 +2507,7 @@ static int ijkff_audio_samples_callback(void *opaque, int16_t *samples, int samp
     return nil;
 }
 
-# pragma mark record video
+#pragma mark record video
 
 - (int)startFastRecord:(NSString *)filePath
 {
@@ -2530,7 +2545,17 @@ static int ijkff_audio_samples_callback(void *opaque, int16_t *samples, int samp
 
 - (NSURL *)contentURL
 {
-    return [NSURL URLWithString:self.content];
+    if ([self.content hasPrefix:@"/"]) {
+        return [NSURL fileURLWithPath:self.content];
+    }
+    NSURL *url = [NSURL URLWithString:self.content];
+    if (!url && self.content) {
+        NSString *escaped = [self.content stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
+        if (escaped) {
+            url = [NSURL URLWithString:escaped];
+        }
+    }
+    return url;
 }
 
 @end
