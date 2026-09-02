@@ -210,7 +210,7 @@ static int write_thread(void *arg)
     
     while (fsr->packetq.abort_request == 0) {
         int serial = 0;
-        int get_pkt = packet_queue_get(&fsr->packetq, pkt, 1, &serial);
+        int get_pkt = packet_queue_get(&fsr->packetq, pkt, 1, &serial, NULL);
         if (get_pkt < 0) {
             r = -10;
             break;

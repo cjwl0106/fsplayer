@@ -34,6 +34,6 @@ void packet_queue_flush(PacketQueue *q);
 void packet_queue_destroy(PacketQueue *q);
 void packet_queue_abort(PacketQueue *q);
 void packet_queue_start(PacketQueue *q);
-int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block, int *serial);
+int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block, int *serial, int64_t *demux_ms);
 
 #endif /* ff_packet_list_h */

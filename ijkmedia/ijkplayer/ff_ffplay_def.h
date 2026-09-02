@@ -137,6 +137,7 @@
 typedef struct MyAVPacketList {
     AVPacket *pkt;
     int serial;
+    int64_t demux_ms;     /* wall-clock time (ms) when av_read_frame returned this packet */
 } MyAVPacketList;
 
 typedef struct PacketQueue {
@@ -196,6 +197,7 @@ typedef struct Frame {
     double pts;           /* presentation timestamp for the frame */
     double duration;      /* estimated duration of the frame */
     int64_t pos;          /* byte position of the frame in the input file */
+    int64_t demux_ms;     /* wall-clock time (ms) when av_read_frame returned this frame's packet */
     SDL_VoutOverlay *bmp;
     int allocated;
     int width;
@@ -250,6 +252,7 @@ typedef struct Decoder {
     Uint64 start_seek_time;
     
     int hw_failed_count;
+    int64_t pkt_demux_ms;  /* wall-clock time (ms) when current packet was demuxed */
 } Decoder;
 
 typedef struct FFSubtitle FFSubtitle;
@@ -383,6 +386,8 @@ typedef struct VideoState {
     volatile int initialized_decoder;
     int seek_buffering;
     FFSubtitle *ffSub;
+    int64_t last_video_latency_trace_ms;  /* last wall-clock time (ms) for video LatencyTrace throttle */
+    int64_t last_audio_latency_trace_ms;  /* last wall-clock time (ms) for audio LatencyTrace throttle */
 } VideoState;
 
 /*****************************************************************************
@@ -495,6 +500,7 @@ typedef struct FFPlayer {
     int64_t seek_at_start;
     int subtitle_mix;
     int infinite_buffer;
+    int realtime_drop_threshold_ms;   /* realtime stream: flush/skip packets when queue duration exceeds this (ms), default 3000 */
     enum ShowMode show_mode;
     char *audio_codec_name;
     char *video_codec_name;
@@ -651,6 +657,7 @@ inline static void ffp_reset_internal(FFPlayer *ffp)
     ffp->framedrop              = 0; // option
     ffp->seek_at_start          = 0;
     ffp->infinite_buffer        = -1;
+    ffp->realtime_drop_threshold_ms = 3000;
     ffp->show_mode              = SHOW_MODE_NONE;
     av_freep(&ffp->audio_codec_name);
     av_freep(&ffp->video_codec_name);

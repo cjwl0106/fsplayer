@@ -427,7 +427,7 @@ static void move_backup_to_normal(FFSubtitle *sub, int stream)
 {
     AVPacket pkt;
     while (1) {
-        int get_pkt = packet_queue_get(&sub->packetq2, &pkt, 0, NULL);
+        int get_pkt = packet_queue_get(&sub->packetq2, &pkt, 0, NULL, NULL);
         if (get_pkt > 0) {
             if (pkt.stream_index == stream) {
                 av_log(NULL, AV_LOG_INFO,"sub move backup to normal:%d,%lld\n", pkt.stream_index, pkt.pts/1000);

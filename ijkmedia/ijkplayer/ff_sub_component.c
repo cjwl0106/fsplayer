@@ -209,7 +209,7 @@ static int decode_a_frame(FFSubComponent *com, Decoder *d, AVSubtitle *pkt)
             d->packet_pending = 0;
         } else {
             int old_serial = d->pkt_serial;
-            int get_pkt = packet_queue_get(d->queue, d->pkt, 0, &d->pkt_serial);
+            int get_pkt = packet_queue_get(d->queue, d->pkt, 0, &d->pkt_serial, NULL);
             //av_log(NULL, AV_LOG_ERROR, "sub packet_queue_get:%d\n",get_pkt);
             if (get_pkt < 0)
                 return -1;

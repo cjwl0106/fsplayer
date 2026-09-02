@@ -28,13 +28,14 @@ int packet_queue_put_private(PacketQueue *q, AVPacket *pkt)
     int ret;
     if (q->abort_request)
        return -1;
-    
+
     if (av_fifo_can_write((const AVFifo *)q->pkt_list) < 1) {
         if (av_fifo_grow2(q->pkt_list, 50) < 0)
             return -1;
     }
     pkt1.pkt = pkt;
     pkt1.serial = q->serial;
+    pkt1.demux_ms = av_gettime_relative() / 1000;
     ret = av_fifo_write(q->pkt_list, &pkt1, 1);
     if (ret < 0)
         return ret;
@@ -141,7 +142,7 @@ void packet_queue_start(PacketQueue *q)
 }
 
 /* return < 0 if aborted, 0 if no packet and > 0 if packet.  */
-int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block, int *serial)
+int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block, int *serial, int64_t *demux_ms)
 {
     MyAVPacketList pkt1;
     int ret;
@@ -153,7 +154,7 @@ int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block, int *serial)
             ret = -1;
             break;
         }
-        
+
         if (av_fifo_read(q->pkt_list, &pkt1, 1) >= 0) {
             q->nb_packets--;
             q->size -= pkt1.pkt->size + sizeof(pkt1);
@@ -161,6 +162,8 @@ int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block, int *serial)
             av_packet_move_ref(pkt, pkt1.pkt);
             if (serial)
                 *serial = pkt1.serial;
+            if (demux_ms)
+                *demux_ms = pkt1.demux_ms;
             av_packet_free(&pkt1.pkt);
             ret = 1;
             break;

@@ -159,6 +159,8 @@ static const AVOption ffp_context_options[] = {
         OPTION_OFFSET(packet_buffering),    OPTION_INT(1, 0, 1) },
     { "sync-av-start",                      "synchronise a/v start time",
         OPTION_OFFSET(sync_av_start),       OPTION_INT(1, 0, 1) },
+    { "av-sync-type",                       "av sync type (0: audio master, 1: video master, 2: external clock)",
+        OPTION_OFFSET(av_sync_type),        OPTION_INT(AV_SYNC_AUDIO_MASTER, 0, 2) },
     { "iformat",                            "force format",
         OPTION_OFFSET(iformat_name),        OPTION_STR(NULL) },
     { "no-time-adjust",                     "return player's real time from the media stream instead of the adjusted time",
@@ -216,6 +218,8 @@ static const AVOption ffp_context_options[] = {
         OPTION_OFFSET(render_wait_start),      OPTION_INT(0, 0, 1) },
     { "icy-update-period",                  "set icy meta update period,default is 2000ms",
         OPTION_OFFSET(icy_update_period),       OPTION_INT64(2000, 0, INT_MAX) },
+    { "realtime-drop-threshold",            "realtime stream: flush/skip packets when queue duration exceeds this (ms)",
+        OPTION_OFFSET(realtime_drop_threshold_ms), OPTION_INT(3000, 0, INT_MAX) },
     { NULL }
 };
 

@@ -135,20 +135,20 @@ static void update_sample_display(FFPlayer *ffp, uint8_t *samples, int samples_s
 
 #include "ff_heic_tile.h"
 
-static int packet_queue_get_or_buffering(FFPlayer *ffp, PacketQueue *q, AVPacket *pkt, int *serial, int *finished)
+static int packet_queue_get_or_buffering(FFPlayer *ffp, PacketQueue *q, AVPacket *pkt, int *serial, int *finished, int64_t *demux_ms)
 {
     assert(finished);
     if (!ffp->packet_buffering)
-        return packet_queue_get(q, pkt, 1, serial);
+        return packet_queue_get(q, pkt, 1, serial, demux_ms);
 
     while (1) {
-        int new_packet = packet_queue_get(q, pkt, 0, serial);
+        int new_packet = packet_queue_get(q, pkt, 0, serial, demux_ms);
         if (new_packet < 0)
             return -1;
         else if (new_packet == 0) {
             if (q->is_buffer_indicator && !*finished)
                 ffp_toggle_buffering(ffp, 1);
-            new_packet = packet_queue_get(q, pkt, 1, serial);
+            new_packet = packet_queue_get(q, pkt, 1, serial, demux_ms);
             if (new_packet < 0)
                 return -1;
         }
@@ -214,6 +214,25 @@ static int decoder_decode_frame(FFPlayer *ffp, Decoder *d, AVFrame *frame, AVSub
                 switch (d->avctx->codec_type) {
                     case AVMEDIA_TYPE_VIDEO:
                         ret = avcodec_receive_frame(d->avctx, frame);
+                        if (ret < 0 && ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
+                            char vdec_errbuf[128] = { '\0' };
+                            av_strerror(ret, vdec_errbuf, sizeof(vdec_errbuf));
+                            const char *hwaccel_name = "none";
+                            if (d->avctx->hwaccel)
+                                hwaccel_name = d->avctx->hwaccel->name;
+                            ALOGE("[VDecError] avcodec_receive_frame failed: %s (%d), codec: %s, hwaccel: %s, hw_failed: %d",
+                                  vdec_errbuf, ret,
+                                  avcodec_get_name(d->avctx->codec_id),
+                                  hwaccel_name,
+                                  d->hw_failed_count);
+                            if (d->avctx->hw_device_ctx) {
+                                d->hw_failed_count++;
+                                if (d->hw_failed_count > 2) {
+                                    ALOGE("[VDecError] hwaccel fatal: %d consecutive failures, will fallback", d->hw_failed_count);
+                                    ffp_notify_msg2(ffp, FFP_MSG_VIDEO_DECODER_FATAL, ret);
+                                }
+                            }
+                        }
                         if (ret >= 0) {
                             int vdec_type = frame->format == AV_PIX_FMT_VIDEOTOOLBOX ? FFP_PROPV_DECODER_AVCODEC_HW : FFP_PROPV_DECODER_AVCODEC;
                             
@@ -307,7 +326,7 @@ static int decoder_decode_frame(FFPlayer *ffp, Decoder *d, AVFrame *frame, AVSub
                 d->packet_pending = 0;
             } else {
                 int old_serial = d->pkt_serial;
-                if (packet_queue_get_or_buffering(ffp, d->queue, d->pkt, &d->pkt_serial, &d->finished) < 0) {
+                if (packet_queue_get_or_buffering(ffp, d->queue, d->pkt, &d->pkt_serial, &d->finished, &d->pkt_demux_ms) < 0) {
                     status = -1;
                     goto abort_end;
                 }
@@ -318,6 +337,17 @@ static int decoder_decode_frame(FFPlayer *ffp, Decoder *d, AVFrame *frame, AVSub
                     d->hw_failed_count = 0;
                     d->next_pts = d->start_pts;
                     d->next_pts_tb = d->start_pts_tb;
+                }
+
+                // 实时流：跳过 demux 时间过旧的包（距现在超过阈值）
+                VideoState *_is = ffp->is;
+                if (_is && _is->realtime && d->pkt_demux_ms > 0) {
+                    int64_t now_ms = av_gettime_relative() / 1000;
+                    if (now_ms - d->pkt_demux_ms > ffp->realtime_drop_threshold_ms) {
+                        av_packet_unref(d->pkt);
+                        d->packet_pending = 0;  // 防止 continue 后重发已释放的包
+                        continue;
+                    }
                 }
             }
             if (d->queue->serial == d->pkt_serial)
@@ -1082,6 +1112,23 @@ retry:
             frame_queue_next(&is->pictq);
             is->force_refresh = 1;
 
+            // RTSP 延迟追踪：打印从 demux 到显示各节点的耗时（每秒一次）
+            if (is->realtime && vp->demux_ms > 0) {
+                int64_t now_ms = av_gettime_relative() / 1000;
+                int64_t last = is->last_video_latency_trace_ms;
+                if (now_ms - last >= 1000 && __sync_bool_compare_and_swap(&is->last_video_latency_trace_ms, last, now_ms)) {
+                    int64_t e2e_ms = now_ms - vp->demux_ms;
+                    double vmdiff = ffp->stat.vmdiff;
+                    ALOGD("[LatencyTrace] e2e: %lld ms | demux->display | pts: %.3f | vmdiff: %.3f | aq: %d/%d | vq: %d/%d | vframe: %d",
+                          (long long)e2e_ms,
+                          vp->pts,
+                          -vmdiff,
+                          is->audioq.nb_packets, is->audioq.size,
+                          is->videoq.nb_packets, is->videoq.size,
+                          frame_queue_nb_remaining(&is->pictq));
+                }
+            }
+
             SDL_LockMutex(ffp->is->play_mutex);
             if (is->step) {
                 if (is->audio_st) {
@@ -1286,7 +1333,7 @@ static void ffp_calculate_accurate_seek_drop_diff(FFPlayer *ffp) {
     }
 }
 
-static int queue_picture(FFPlayer *ffp, AVFrame *src_frame, double pts, double duration, int64_t pos, int serial)
+static int queue_picture(FFPlayer *ffp, AVFrame *src_frame, double pts, double duration, int64_t pos, int serial, int64_t demux_ms)
 {
     VideoState *is = ffp->is;
     Frame *vp;
@@ -1661,6 +1708,7 @@ static int queue_picture(FFPlayer *ffp, AVFrame *src_frame, double pts, double d
         vp->pts = pts;
         vp->duration = duration;
         vp->pos = pos;
+        vp->demux_ms = demux_ms;
         vp->frame_serial = serial;
         vp->sar = av_guess_sample_aspect_ratio(is->ic, is->video_st, src_frame);
         vp->bmp->sar_num = vp->sar.num;
@@ -2432,6 +2480,7 @@ static int audio_thread(void *arg)
                 af->pts = (frame->pts == AV_NOPTS_VALUE) ? NAN : frame->pts * av_q2d(tb);
                 af->frame_serial = is->auddec.pkt_serial;
                 af->duration = av_q2d((AVRational){frame->nb_samples, frame->sample_rate});
+                af->demux_ms = is->auddec.pkt_demux_ms;
 
                 av_frame_move_ref(af->frame, frame);
                 frame_queue_push(&is->sampq);
@@ -2470,7 +2519,7 @@ static int on_video_picture_output(FFPlayer *ffp, AVFrame *frame, AVRational tb,
     duration = (frame_rate.num && frame_rate.den ? av_q2d((AVRational){frame_rate.den, frame_rate.num}) : 0);
     pts = (frame->pts == AV_NOPTS_VALUE) ? NAN : frame->pts * av_q2d(tb);
 
-    return queue_picture(ffp, frame, pts, duration, pos, is->viddec.pkt_serial);
+    return queue_picture(ffp, frame, pts, duration, pos, is->viddec.pkt_serial, is->viddec.pkt_demux_ms);
 }
 
 static int ffplay_video_thread(void *arg)
@@ -2672,7 +2721,18 @@ reload:
         frame_queue_next(&is->sampq);
         //skip old audio frames.
     } while (af->frame_serial != is->audioq.serial);
-    
+
+    // RTSP 延迟追踪：音频帧从 demux 到播放回调的耗时（每秒一次，独立限流）
+    if (is->realtime && af->demux_ms > 0) {
+        int64_t now_ms = av_gettime_relative() / 1000;
+        int64_t last = is->last_audio_latency_trace_ms;
+        if (now_ms - last >= 1000 && __sync_bool_compare_and_swap(&is->last_audio_latency_trace_ms, last, now_ms)) {
+            int64_t audio_e2e = now_ms - af->demux_ms;
+            ALOGD("[LatencyTrace] audio e2e: %lld ms | demux->callback | pts: %.3f",
+                  (long long)audio_e2e, af->pts);
+        }
+    }
+
     if (frame_queue_nb_remaining(&is->sampq) > 1) {
         Frame *next_af = frame_queue_peek_next(&is->sampq);
         int delta = 0;
@@ -3837,6 +3897,19 @@ static int read_thread(void *arg)
 
     is->realtime = is_realtime(ic);
 
+    // 当 fflags +nobuffer 设置时，RTSP 等实时流从当前帧开始播放，不等待缓冲
+    if ((ic->flags & AVFMT_FLAG_NOBUFFER) && is->realtime) {
+        av_log(ffp, AV_LOG_INFO, "realtime stream with nobuffer: start from live edge\n");
+        ffp->dcc.first_high_water_mark_in_ms    = 0;
+        ffp->dcc.next_high_water_mark_in_ms     = 0;
+        ffp->dcc.last_high_water_mark_in_ms     = 0;
+        ffp->dcc.current_high_water_mark_in_ms  = 0;
+        ffp->dcc.high_water_mark_in_bytes       = 0;
+        ffp->dcc.min_frames                     = MIN_MIN_FRAMES;
+        if (ffp->infinite_buffer < 0)
+            ffp->infinite_buffer = 0;
+    }
+
     av_dump_format(ic, 0, is->filename, 0);
 
     int video_stream_count = 0;
@@ -4195,7 +4268,16 @@ static int read_thread(void *arg)
         }
         
         pkt->flags = 0;
+        int64_t read_start_ms = is->realtime ? av_gettime_relative() / 1000 : 0;
         ret = av_read_frame(ic, pkt);
+        if (is->realtime && ret >= 0) {
+            int64_t read_cost_ms = av_gettime_relative() / 1000 - read_start_ms;
+            if (read_cost_ms > 50) {
+                ALOGD("[LatencyTrace] av_read_frame slow: %lld ms | stream: %d | aq: %d | vq: %d",
+                      (long long)read_cost_ms, pkt->stream_index,
+                      is->audioq.nb_packets, is->videoq.nb_packets);
+            }
+        }
         if (ret < 0) {
             int pb_eof = 0;
             int pb_error = 0;
@@ -4270,6 +4352,27 @@ static int read_thread(void *arg)
             //continue;
         } else {
             is->eof = 0;
+
+            // 实时流：packet queue 堆积超过阈值时 flush 旧包跳到实时边缘
+            if (is->realtime) {
+                double audio_q_dur_ms = 0, video_q_dur_ms = 0;
+                if (is->audio_st && is->audio_st->time_base.den > 0 && is->audioq.nb_packets > 0)
+                    audio_q_dur_ms = is->audioq.duration * av_q2d(is->audio_st->time_base) * 1000;
+                if (is->video_st && is->video_st->time_base.den > 0 && is->videoq.nb_packets > 0)
+                    video_q_dur_ms = is->videoq.duration * av_q2d(is->video_st->time_base) * 1000;
+
+                if (audio_q_dur_ms > ffp->realtime_drop_threshold_ms || video_q_dur_ms > ffp->realtime_drop_threshold_ms) {
+                    av_log(ffp, AV_LOG_WARNING, "[RealtimeDrop] queue overflow: audio %.0f ms, video %.0f ms, flushing\n",
+                           audio_q_dur_ms, video_q_dur_ms);
+                    if (is->audioq.nb_packets > 0)
+                        packet_queue_flush(&is->audioq);
+                    if (is->videoq.nb_packets > 0)
+                        packet_queue_flush(&is->videoq);
+                    // flush 递增了 serial，当前 pkt 的 serial 已过时，丢弃并重新取包
+                    av_packet_unref(pkt);
+                    continue;
+                }
+            }
             
             int64_t now = av_gettime_relative() / 1000;
             if (now - icy_last_update_time > ffp->icy_update_period) {
@@ -4582,17 +4685,70 @@ fail:
     return NULL;
 }
 
+static void ffp_print_buffer_stats_l(FFPlayer *ffp)
+{
+    VideoState *is = ffp->is;
+    if (!is) return;
+
+    // 更新统计
+    ffp_audio_statistic_l(ffp);
+    ffp_video_statistic_l(ffp);
+
+    // 音频 packet queue
+    int audio_pkt_count   = is->audioq.nb_packets;
+    int audio_pkt_bytes   = is->audioq.size;
+    int64_t audio_pkt_dur = ffp->stat.audio_cache.duration;
+
+    // 视频 packet queue
+    int video_pkt_count   = is->videoq.nb_packets;
+    int video_pkt_bytes   = is->videoq.size;
+    int64_t video_pkt_dur = ffp->stat.video_cache.duration;
+
+    // 音频 frame queue
+    int audio_frame_count = frame_queue_nb_remaining(&is->sampq);
+
+    // 视频 frame queue
+    int video_frame_count = frame_queue_nb_remaining(&is->pictq);
+
+    // demux / IO 缓冲
+    int64_t buf_backwards  = ffp->stat.buf_backwards;
+    int64_t buf_forwards   = ffp->stat.buf_forwards;
+    int64_t buf_capacity   = ffp->stat.buf_capacity;
+    int64_t cache_file_fwd = ffp->stat.cache_file_forwards;
+    int64_t cache_bytes    = ffp->stat.cache_count_bytes;
+
+    ALOGD("[BufferStats] "
+          "AudioPkt: %d pkts, %d bytes, %lld ms | "
+          "VideoPkt: %d pkts, %d bytes, %lld ms | "
+          "AudioFrame: %d | VideoFrame: %d | "
+          "DemuxIO: backward %lld, forward %lld, capacity %lld | "
+          "CacheFile: fwd %lld, total %lld",
+          audio_pkt_count, audio_pkt_bytes, (long long)audio_pkt_dur,
+          video_pkt_count, video_pkt_bytes, (long long)video_pkt_dur,
+          audio_frame_count, video_frame_count,
+          (long long)buf_backwards, (long long)buf_forwards, (long long)buf_capacity,
+          (long long)cache_file_fwd, (long long)cache_bytes);
+}
+
 static int video_refresh_thread(void *arg)
 {
     FFPlayer *ffp = arg;
     VideoState *is = ffp->is;
     double remaining_time = 0.0;
+    int64_t last_buffer_stats_time = 0;
     while (!is->abort_request) {
         if (remaining_time > 0.0)
             av_usleep((int)(int64_t)(remaining_time * 1000000.0));
         remaining_time = REFRESH_RATE;
         if (is->show_mode != SHOW_MODE_NONE && (!is->paused || is->force_refresh || is->step_on_seeking || is->force_refresh_sub_changed || is->force_refresh_pic))
             video_refresh(ffp, &remaining_time);
+
+        // 每秒打印一次缓冲状态
+        int64_t now = av_gettime_relative() / 1000; // ms
+        if (now - last_buffer_stats_time >= 1000) {
+            last_buffer_stats_time = now;
+            ffp_print_buffer_stats_l(ffp);
+        }
     }
     //clean GLView's attach,because the attach retained sub_overlay;
     //otherwise sub_overlay will be free in main thread!
@@ -5228,12 +5384,12 @@ int ffp_get_loop(FFPlayer *ffp)
 
 int ffp_packet_queue_get_or_buffering(FFPlayer *ffp, PacketQueue *q, AVPacket *pkt, int *serial, int *finished)
 {
-    return packet_queue_get_or_buffering(ffp, q, pkt, serial, finished);
+    return packet_queue_get_or_buffering(ffp, q, pkt, serial, finished, NULL);
 }
 
 int ffp_queue_picture(FFPlayer *ffp, AVFrame *src_frame, double pts, double duration, int64_t pos, int serial)
 {
-    return queue_picture(ffp, src_frame, pts, duration, pos, serial);
+    return queue_picture(ffp, src_frame, pts, duration, pos, serial, 0);
 }
 
 int ffp_get_master_sync_type(VideoState *is)
