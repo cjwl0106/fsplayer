@@ -2511,9 +2511,23 @@ static int ijkff_audio_samples_callback(void *opaque, int16_t *samples, int samp
 
 - (int)startFastRecord:(NSString *)filePath
 {
+    return [self startFastRecord:filePath metadata:nil];
+}
+
+- (int)startFastRecord:(NSString *)filePath metadata:(NSDictionary<NSString *, NSString *> *)metadata
+{
     if (!_mediaPlayer)
         return -1000;
-    return ijkmp_start_fast_record(_mediaPlayer, [filePath UTF8String]);
+
+    AVDictionary *dict = NULL;
+    if (metadata) {
+        [metadata enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSString *obj, BOOL *stop) {
+            av_dict_set(&dict, [key UTF8String], [obj UTF8String], 0);
+        }];
+    }
+    int ret = ijkmp_start_fast_record(_mediaPlayer, [filePath UTF8String], dict);
+    av_dict_free(&dict);
+    return ret;
 }
 
 - (int)stopFastRecord

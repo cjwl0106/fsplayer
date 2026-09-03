@@ -913,12 +913,12 @@ const char * ijkmp_get_iformat_extensions(IjkMediaPlayer *mp)
     return r;
 }
 
-int ijkmp_start_fast_record(IjkMediaPlayer *mp,const char *file_name)
+int ijkmp_start_fast_record(IjkMediaPlayer *mp, const char *file_name, const AVDictionary *metadata)
 {
     assert(mp);
     MPTRACE("ijkmp_startFastRecord()\n");
     pthread_mutex_lock(&mp->mutex);
-    int retval = ffp_start_mux(mp->ffplayer, file_name);
+    int retval = ffp_start_mux(mp->ffplayer, file_name, metadata);
     pthread_mutex_unlock(&mp->mutex);
     MPTRACE("ijkmp_startFastRecord()=%d\n", retval);
     return retval;

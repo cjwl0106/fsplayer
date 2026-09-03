@@ -373,7 +373,7 @@ static int decoder_decode_frame(FFPlayer *ffp, Decoder *d, AVFrame *frame, AVSub
                 goto abort_end;
             }
             
-            if (ffp->movie_mixing) {
+            if (ffp->movie_mixing && ffp->movie_muxer) {
                 if (d->avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
                     ff_write_video_muxer(ffp->movie_muxer, d->pkt);
                 } else if (d->avctx->codec_type == AVMEDIA_TYPE_AUDIO) {
@@ -609,7 +609,10 @@ static void stream_close(FFPlayer *ffp)
     frame_queue_destroy(&is->sampq);
     
     ffp_stop_mux(ffp);
-    ffp_stop_recorder(ffp);
+    // 在解码线程已结束后释放 muxer 资源（write_thread 等待 + 内存释放）
+    ff_destroy_muxer(&ffp->movie_muxer);
+    // 在解码线程已结束后释放 recorder 资源
+    ff_destroy_recorder(&ffp->movie_recorder);
     SDL_DestroyCond(is->audio_accurate_seek_cond);
     SDL_DestroyCond(is->video_accurate_seek_cond);
     SDL_DestroyCond(is->continue_read_thread);
@@ -6186,29 +6189,52 @@ const char * ffp_get_iformat_extensions(FFPlayer *ffp)
     return NULL;
 }
 
-int ffp_start_mux(FFPlayer *ffp, const char *file_name)
+int ffp_start_mux(FFPlayer *ffp, const char *file_name, const AVDictionary *metadata)
 {
     if (!ffp || !file_name) {
         return -1;
     }
-    
+
+    av_log(NULL, AV_LOG_INFO, "[Record] ffp_start_mux: file=%s\n", file_name);
+
     VideoState *is = ffp->is;
     if (!is || !is->ic || !ffp->prepared || is->paused || is->abort_request) {
+        av_log(NULL, AV_LOG_WARNING, "[Record] ffp_start_mux: invalid state (prepared=%d, paused=%d, abort=%d)\n",
+               ffp->prepared, is ? is->paused : -1, is ? is->abort_request : -1);
         return -2;
     }
-    
+
     if (ffp->movie_mixing) {
+        av_log(NULL, AV_LOG_WARNING, "[Record] ffp_start_mux: already recording\n");
         return -3;
     }
 
-    int ret = ff_create_muxer(&ffp->movie_muxer, file_name, is->ic, is->audio_stream, is->video_stream);
+    // 检查流索引有效性
+    if (is->video_stream < 0 && is->audio_stream < 0) {
+        av_log(NULL, AV_LOG_ERROR, "[Record] ffp_start_mux: no valid stream (video=%d, audio=%d)\n",
+               is->video_stream, is->audio_stream);
+        return -2;
+    }
+
+    av_log(NULL, AV_LOG_INFO, "[Record] ffp_start_mux: video_stream=%d, audio_stream=%d, find_stream_info=%d\n",
+           is->video_stream, is->audio_stream, ffp->find_stream_info);
+
+    // 传入解码器上下文，当 find_stream_info=0 时 codecpar 可能不完整，
+    // 需要从解码器上下文同步完整的流参数（如 extradata、sample_rate 等）
+    AVCodecContext *video_avctx = (is->video_stream >= 0) ? is->viddec.avctx : NULL;
+    AVCodecContext *audio_avctx = (is->audio_stream >= 0) ? is->auddec.avctx : NULL;
+
+    int ret = ff_create_muxer(&ffp->movie_muxer, file_name, is->ic, is->audio_stream, is->video_stream, video_avctx, audio_avctx, metadata);
     if (ret) {
+        av_log(NULL, AV_LOG_ERROR, "[Record] ffp_start_mux: ff_create_muxer failed (%d)\n", ret);
         return ret;
     }
     ret = ff_start_muxer(ffp->movie_muxer);
     if (!ret) {
         ffp->movie_mixing = 1;
+        av_log(NULL, AV_LOG_INFO, "[Record] ffp_start_mux: recording started\n");
     } else {
+        av_log(NULL, AV_LOG_ERROR, "[Record] ffp_start_mux: ff_start_muxer failed (%d)\n", ret);
         ffp_stop_mux(ffp);
     }
     return ret;
@@ -6220,9 +6246,16 @@ int ffp_stop_mux(FFPlayer *ffp)
     if (!is) {
         return -1;
     }
+    av_log(NULL, AV_LOG_INFO, "[Record] ffp_stop_mux: stopping recording (movie_mixing=%d)\n", ffp->movie_mixing);
+    // 先设置标志，阻止解码线程继续写入
     ffp->movie_mixing = 0;
+    // abort muxer 的 packetq，阻止新数据入队
+    // 注意：不在这里调用 ff_destroy_muxer 释放内存，
+    // 因为解码线程可能还在访问 movie_muxer（竞态条件），
+    // 延迟到 stream_close 中（解码线程已结束后）再释放
     ff_stop_muxer(ffp->movie_muxer);
-    return ff_destroy_muxer(&ffp->movie_muxer);
+    av_log(NULL, AV_LOG_INFO, "[Record] ffp_stop_mux: muxer stopped, destroy deferred to stream_close\n");
+    return 0;
 }
 
 int ffp_start_recorder(FFPlayer *ffp, const char *file_name)
@@ -6260,8 +6293,9 @@ int ffp_stop_recorder(FFPlayer *ffp)
         return -1;
     }
     ffp->movie_recording = 0;
+    // 只 abort，不释放内存（解码线程可能还在访问）
     ff_stop_recorder(ffp->movie_recorder);
-    return ff_destroy_recorder(&ffp->movie_recorder);
+    return 0;
 }
 
 void ffp_refresh_picture(FFPlayer *ffp)

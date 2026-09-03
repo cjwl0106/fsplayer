@@ -159,7 +159,28 @@ typedef enum FSAudioChannel {
 - (FSAudioChannel)getAudioChanne;
 - (void)setAudioChannel:(FSAudioChannel)config;
 - (NSArray <NSString *> *)getInputFormatExtensions;
+
+#pragma mark - Record Metadata Keys
+// 设备信息
+#define FS_METADATA_KEY_MAKE            @"com.apple.quicktime.make"              // 制造商 (如 "Apple")
+#define FS_METADATA_KEY_MODEL           @"com.apple.quicktime.model"             // 设备型号 (如 "iPhone 16 Pro")
+#define FS_METADATA_KEY_SOFTWARE        @"com.apple.quicktime.software"          // 软件名称/版本
+// 位置信息
+#define FS_METADATA_KEY_LOCATION        @"com.apple.quicktime.location.ISO6709"  // ISO 6709 格式坐标 (如 "+40.7128-074.0060/")
+// 内容信息
+#define FS_METADATA_KEY_TITLE           @"title"                                 // 标题
+#define FS_METADATA_KEY_ARTIST          @"artist"                                // 作者
+#define FS_METADATA_KEY_ALBUM           @"album"                                 // 专辑
+#define FS_METADATA_KEY_GENRE           @"genre"                                 // 流派
+#define FS_METADATA_KEY_DESCRIPTION     @"description"                           // 描述
+#define FS_METADATA_KEY_CREATION_DATE   @"com.apple.quicktime.creationdate"      // 创建日期
+// 拍摄参数
+#define FS_METADATA_KEY_CAMERA_ISO      @"com.apple.quicktime.camera.iso"        // ISO 感光度
+#define FS_METADATA_KEY_CAMERA_EXPOSURE @"com.apple.quicktime.camera.exposure"   // 曝光时间
+#define FS_METADATA_KEY_CAMERA_FNUMBER  @"com.apple.quicktime.camera.fnumber"   // 光圈值 (f-number)
+
 - (int)startFastRecord:(NSString *)filePath;
+- (int)startFastRecord:(NSString *)filePath metadata:(nullable NSDictionary<NSString *, NSString *> *)metadata;
 - (int)stopFastRecord;
 - (int)startExactRecord:(NSString *)filePath;
 - (int)stopExactRecord;

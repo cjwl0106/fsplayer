@@ -30,7 +30,10 @@ struct FFPlayer;
 struct AVPacket;
 struct AVFormatContext;
 
-int ff_create_muxer(void **out_ffr, const char *file_name, const struct AVFormatContext *ifmt_ctx, int audio_stream, int video_stream);
+struct AVCodecContext;
+struct AVDictionary;
+
+int ff_create_muxer(void **out_ffr, const char *file_name, const struct AVFormatContext *ifmt_ctx, int audio_stream, int video_stream, const struct AVCodecContext *video_avctx, const struct AVCodecContext *audio_avctx, const struct AVDictionary *metadata);
 int ff_start_muxer(void *ffr);
 int ff_write_audio_muxer(void *ffr, struct AVPacket *packet);
 int ff_write_video_muxer(void *ffr, struct AVPacket *packet);
