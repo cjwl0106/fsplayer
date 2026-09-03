@@ -230,14 +230,21 @@ static int do_write_muxer(void *ffr, AVPacket *pkt)
     AVStream *out_stream = fsr->ofmt_ctx->streams[out_idx];
 
     if (pkt->pts != AV_NOPTS_VALUE) {
-        // 转换PTS/DTS
+        // 转换PTS
         pkt->pts = av_rescale_q_rnd(pkt->pts, in_stream->time_base, out_stream->time_base, (AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
-    } else {
-
     }
 
-    pkt->dts = av_rescale_q_rnd(pkt->dts, in_stream->time_base, out_stream->time_base, (AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
-    pkt->duration = av_rescale_q(pkt->duration, in_stream->time_base, out_stream->time_base);
+    if (pkt->dts != AV_NOPTS_VALUE) {
+        // 转换DTS
+        pkt->dts = av_rescale_q_rnd(pkt->dts, in_stream->time_base, out_stream->time_base, (AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
+    } else if (pkt->pts != AV_NOPTS_VALUE) {
+        // DTS 无效时，用 PTS 作为 DTS（MP4 要求 DTS 有效）
+        pkt->dts = pkt->pts;
+    }
+
+    if (pkt->duration > 0) {
+        pkt->duration = av_rescale_q(pkt->duration, in_stream->time_base, out_stream->time_base);
+    }
     pkt->pos = -1;
 
     if (AVMEDIA_TYPE_AUDIO == in_stream->codecpar->codec_type) {
