@@ -917,7 +917,12 @@ void ffp_apple_log_extra_print(int level, const char *tag, const char *fmt, ...)
 {
     if ([_view conformsToProtocol:@protocol(FSVideoRenderingProtocol)]) {
         UIView<FSVideoRenderingProtocol>* glView = (UIView<FSVideoRenderingProtocol>*)_view;
-        return [glView snapshot];
+        // 使用 Origin 而非 Screen：直接从 CVPixelBuffer 提取视频帧，按逻辑尺寸裁剪，
+        // 避免 AspectFit 黑边和像素对齐产生的顶部/底部空白区域。
+        CGImageRef cgImg = [glView snapshot:FSSnapshotTypeOrigin];
+        if (cgImg) {
+            return [[UIImage alloc] initWithCGImage:cgImg];
+        }
     }
 
     return nil;

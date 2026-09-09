@@ -934,9 +934,11 @@ typedef CGRect NSRect;
     if (!context) {
         context = [CIContext contextWithOptions:NULL];
     }
-    CGRect rect = CGRectMake(0,0,
-                             CVPixelBufferGetWidth(pixelBuffer),
-                             CVPixelBufferGetHeight(pixelBuffer));
+    // 使用 attach.w/h（视频逻辑尺寸）而非 pixelW/pixelH（CVPixelBuffer 对齐后的像素尺寸），
+    // 避免截图包含像素对齐产生的顶部/底部空白区域。
+    int cropW = attach.w > 0 ? attach.w : (int)CVPixelBufferGetWidth(pixelBuffer);
+    int cropH = attach.h > 0 ? attach.h : (int)CVPixelBufferGetHeight(pixelBuffer);
+    CGRect rect = CGRectMake(0, 0, cropW, cropH);
     CGImageRef imageRef = [context createCGImage:ciImage fromRect:rect];
     CVPixelBufferRelease(pixelBuffer);
     return imageRef ? (CGImageRef)CFAutorelease(imageRef) : NULL;
