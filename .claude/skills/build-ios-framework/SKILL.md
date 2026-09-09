@@ -12,6 +12,26 @@ user-invocable: true
 
 - `examples/xcframewrok/FSPlayer.xcframework` — 包含 iOS 真机 arm64 和 iOS 模拟器 arm64
 
+## 典型使用场景
+
+### 仅重新打包 xcframework（不更新第三方库）
+
+当只修改了 FSPlayer 自身代码（如 `ijkmedia/` 下的源码），第三方库产物无需重新编译时，只需执行 framework 步骤：
+
+```bash
+./build-lgpl.sh framework
+```
+
+这会跳过 init/compile/lipo 步骤，直接用已有的第三方库产物重新编译 FSPlayer 并生成 xcframework，耗时约 1-2 分钟。
+
+### 完整构建（含第三方库）
+
+首次构建或第三方库有更新时，执行全流程：
+
+```bash
+./build-lgpl.sh all
+```
+
 ## 构建流程
 
 所有构建步骤已自动化为 [build-lgpl.sh](../../../build-lgpl.sh) 脚本：

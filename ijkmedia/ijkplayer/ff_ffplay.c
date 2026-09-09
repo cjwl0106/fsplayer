@@ -2672,6 +2672,36 @@ static int synchronize_audio(VideoState *is, int nb_samples)
         }
     }
 
+    // 音频延迟诊断：每秒打印同步状态快照（判定根因A「audclk 被延迟高估」 vs 根因D「强丢音频」）
+    // 只有音频为从时钟且同步被真正执行时才统计校正次数
+    if (get_master_sync_type(is) != AV_SYNC_AUDIO_MASTER && wanted_nb_samples != nb_samples) {
+        is->audio_resample_corrections++;
+    }
+    {
+        int64_t now_ms = av_gettime_relative() / 1000;
+        int64_t last = is->last_audio_sync_trace_ms;
+        if (now_ms - last >= 1000 && __sync_bool_compare_and_swap(&is->last_audio_sync_trace_ms, last, now_ms)) {
+            double master_clk = get_master_clock(is);
+            double audclk_val = get_clock(&is->audclk);
+            double vidclk_val = is->video_st ? get_clock(&is->vidclk) : NAN;
+            int master_type = get_master_sync_type(is);
+            // 硬件缓冲时长估算：is->audio_hw_buf_size 来自 audio_open 的 spec.size（不含 Aout 额外 latency）
+            double hw_buf_ms = (is->audio_tgt.bytes_per_sec > 0)
+                               ? (double)is->audio_hw_buf_size * 1000.0 / is->audio_tgt.bytes_per_sec : 0.0;
+            ALOGD("[AudioSync] master=%d | audclk=%.3f | vidclk=%.3f | master_clk=%.3f | "
+                  "hwbuf=%.0fms | sampq=%d | resample_corrections=%d | behind_drops=%d | "
+                  "diff_thr=%.0fms | avg_diff=%.3f",
+                  master_type,
+                  audclk_val, vidclk_val, master_clk,
+                  hw_buf_ms,
+                  frame_queue_nb_remaining(&is->sampq),
+                  is->audio_resample_corrections,
+                  is->audio_behind_drop_count,
+                  is->audio_diff_threshold * 1000.0,
+                  is->audio_diff_cum * (1.0 - is->audio_diff_avg_coef));
+        }
+    }
+
     return wanted_nb_samples;
 }
 
@@ -2707,6 +2737,7 @@ static int audio_decode_frame(FFPlayer *ffp)
             is->viddec.first_frame_decoded = 1;
         } else {
             /* video pipeline is not ready yet */
+            is->audio_sync_skipped_wait++;
             return -1;
         }
     }
@@ -2955,6 +2986,7 @@ static double consume_audio_buffer(FFPlayer *ffp, double diff)
             double threshold = is->step ? AV_SYNC_THRESHOLD_MIN : AV_SYNC_THRESHOLD_MAX;
             double delta = video_pts - pts - get_clock_extral_delay(&is->audclk);
             if (delta > threshold) {
+                __sync_fetch_and_add(&is->audio_behind_drop_count, 1);
                 av_log(NULL, AV_LOG_INFO, "audio is behind:%0.3f\n", delta);
                 return delta;
             }
@@ -3568,9 +3600,18 @@ static int stream_component_open(FFPlayer *ffp, int stream_index)
             /* init averaging filter */
             is->audio_diff_avg_coef  = exp(log(0.01) / AUDIO_DIFF_AVG_NB);
             is->audio_diff_avg_count = 0;
-            /* since we do not have a precise anough audio FIFO fullness,
+            /* since we do not have a precise enough audio FIFO fullness,
                we correct audio sync only if larger than this threshold */
             is->audio_diff_threshold = 2.0 * is->audio_hw_buf_size / is->audio_tgt.bytes_per_sec;
+
+            /* 实时流（如 RTSP）音频同步阈值优化：
+               默认阈值 = 2 * hw_buf_size / bytes_per_sec，通常为 256ms，
+               对于实时流过大，导致音频落后视频 200ms+ 时不做校正，变倍后画面抖动。
+               实时流使用更小的阈值（50ms），使音频能更快追赶视频时钟。 */
+            if (is->realtime) {
+                double realtime_threshold = FFMAX(0.05, (double)is->audio_hw_buf_size / is->audio_tgt.bytes_per_sec);
+                is->audio_diff_threshold = FFMIN(is->audio_diff_threshold, realtime_threshold);
+            }
 
             is->audio_stream = stream_index;
             is->audio_st = st;
@@ -4720,17 +4761,29 @@ static void ffp_print_buffer_stats_l(FFPlayer *ffp)
     int64_t cache_file_fwd = ffp->stat.cache_file_forwards;
     int64_t cache_bytes    = ffp->stat.cache_count_bytes;
 
+    // 音频同步诊断：时钟差、Aout 延迟上报、校正计数
+    double audclk_val = is->audio_st ? get_clock(&is->audclk) : NAN;
+    double vidclk_val = is->video_st ? get_clock(&is->vidclk) : NAN;
+    double av_diff_s  = audclk_val - vidclk_val;   // 负 = 音频时钟落后视频(被判定需要加速)
+    double aout_lat_ms = SDL_AoutGetLatencySeconds(ffp->aout) * 1000.0;
+
     ALOGD("[BufferStats] "
           "AudioPkt: %d pkts, %d bytes, %lld ms | "
           "VideoPkt: %d pkts, %d bytes, %lld ms | "
           "AudioFrame: %d | VideoFrame: %d | "
           "DemuxIO: backward %lld, forward %lld, capacity %lld | "
-          "CacheFile: fwd %lld, total %lld",
+          "CacheFile: fwd %lld, total %lld | "
+          "AVClk: audclk %.3f, vidclk %.3f, diff %.0f ms | "
+          "AoutLat: %.0f ms | SyncCnt: resample %d, behind_drop %d, wait_vframe %d",
           audio_pkt_count, audio_pkt_bytes, (long long)audio_pkt_dur,
           video_pkt_count, video_pkt_bytes, (long long)video_pkt_dur,
           audio_frame_count, video_frame_count,
           (long long)buf_backwards, (long long)buf_forwards, (long long)buf_capacity,
-          (long long)cache_file_fwd, (long long)cache_bytes);
+          (long long)cache_file_fwd, (long long)cache_bytes,
+          audclk_val, vidclk_val, av_diff_s * 1000.0,
+          aout_lat_ms,
+          is->audio_resample_corrections, is->audio_behind_drop_count,
+          is->audio_sync_skipped_wait);
 }
 
 static int video_refresh_thread(void *arg)

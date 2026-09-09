@@ -388,6 +388,12 @@ typedef struct VideoState {
     FFSubtitle *ffSub;
     int64_t last_video_latency_trace_ms;  /* last wall-clock time (ms) for video LatencyTrace throttle */
     int64_t last_audio_latency_trace_ms;  /* last wall-clock time (ms) for audio LatencyTrace throttle */
+
+    /* --- 音频延迟诊断字段 --- */
+    int64_t last_audio_sync_trace_ms;   /* last wall-clock time (ms) for [AudioSync] throttle (1/s) */
+    int audio_resample_corrections;     /* synchronize_audio 触发采样数校正的次数 */
+    int audio_sync_skipped_wait;        /* 等待首帧视频时 audio_decode_frame 返回 -1 的次数 */
+    int audio_behind_drop_count;        /* 视频主模式下 consume_audio_buffer 强丢(快进)音频的次数（原子操作） */
 } VideoState;
 
 /*****************************************************************************
