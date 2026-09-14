@@ -47,6 +47,9 @@ typedef struct FSMuxer {
 
     // 录制文件元数据（拍摄设备、位置等）
     AVDictionary *metadata;
+
+    // 实际输出文件路径（当有 metadata 时可能从 .mp4 改为 .mov）
+    char *output_path;
 } FSMuxer;
 
 int ff_create_muxer(void **out_ffr, const char *file_name, const AVFormatContext *ifmt_ctx, int audio_stream, int video_stream, const AVCodecContext *video_avctx, const AVCodecContext *audio_avctx, const AVDictionary *metadata)
@@ -82,6 +85,15 @@ int ff_create_muxer(void **out_ffr, const char *file_name, const AVFormatContext
     // 拷贝 metadata
     if (metadata) {
         av_dict_copy(&fsr->metadata, metadata, 0);
+        const AVDictionaryEntry *entry = NULL;
+        int count = 0;
+        while ((entry = av_dict_iterate(fsr->metadata, entry))) {
+            av_log(NULL, AV_LOG_INFO, "[Record][Metadata] create_muxer copied: %s = %s\n", entry->key, entry->value);
+            count++;
+        }
+        av_log(NULL, AV_LOG_INFO, "[Record][Metadata] create_muxer: copied %d entries\n", count);
+    } else {
+        av_log(NULL, AV_LOG_INFO, "[Record][Metadata] create_muxer: no metadata provided\n");
     }
 
     if (packet_queue_init(&fsr->packetq) < 0){
@@ -89,8 +101,34 @@ int ff_create_muxer(void **out_ffr, const char *file_name, const AVFormatContext
         goto end;
     }
 
+    // 当有 metadata 时，将输出格式改为 MOV，因为 FFmpeg 在 MP4 模式下不支持写入
+    // ©mak/©mod 等 QuickTime udta metadata（仅 MODE_MOV 才支持）。
+    // MOV 格式能将 make/model/title 等 key 映射为 ©mak/©mod/©nam 等 atom，
+    // 这些是 iOS AVAsset 和 Photos 能正确识别的格式。
+    char *actual_file_name = NULL;
+    if (metadata && av_dict_count(metadata) > 0) {
+        // 检查文件扩展名，如果不是 .mov 则替换为 .mov
+        const char *ext = strrchr(file_name, '.');
+        if (ext && strcmp(ext, ".mov") != 0) {
+            size_t base_len = ext - file_name;
+            actual_file_name = av_mallocz(base_len + 5); // ".mov" + '\0'
+            if (!actual_file_name) {
+                r = -1;
+                goto end;
+            }
+            memcpy(actual_file_name, file_name, base_len);
+            memcpy(actual_file_name + base_len, ".mov", 5);
+            av_log(NULL, AV_LOG_INFO, "[Record] create_muxer: changed extension to .mov for metadata support: %s → %s\n",
+                   file_name, actual_file_name);
+        }
+    }
+    const char *output_file_name = actual_file_name ? actual_file_name : file_name;
+
+    // 保存实际输出文件路径
+    fsr->output_path = av_strdup(output_file_name);
+
     // 初始化一个用于输出的AVFormatContext结构体
-    avformat_alloc_output_context2(&fsr->ofmt_ctx, NULL, NULL, file_name);
+    avformat_alloc_output_context2(&fsr->ofmt_ctx, NULL, NULL, output_file_name);
 
     if (!fsr->ofmt_ctx) {
         r = -4;
@@ -186,8 +224,10 @@ int ff_create_muxer(void **out_ffr, const char *file_name, const AVFormatContext
     if (out_ffr) {
         *out_ffr = (void *)fsr;
     }
+    av_freep(&actual_file_name);
     return 0;
 end:
+    av_freep(&actual_file_name);
     return r;
 }
 
@@ -304,14 +344,25 @@ static int write_thread(void *arg)
 
     AVDictionary *opts = NULL;
     // 设置 movflags 为 faststart
+    // 注意：不再使用 use_metadata_tags（mdta 格式），因为 AVAsset 对 mdta key 的
+    // 读取支持不佳（key 变为数字索引）。改为使用默认 ilst 格式写入 ©mak/©mod 等
+    // QuickTime udta metadata，这样 AVAsset 和 iOS Photos 才能正确识别。
     if (strcmp(fsr->ofmt_ctx->oformat->name, "mp4") == 0 || strcmp(fsr->ofmt_ctx->oformat->name, "mov") == 0) {
-        av_dict_set(&opts, "movflags", "faststart+use_metadata_tags", 0);
+        av_dict_set(&opts, "movflags", "faststart", 0);
     }
 
     // 将用户传入的 metadata 写入输出格式上下文
     if (fsr->metadata) {
         av_dict_copy(&fsr->ofmt_ctx->metadata, fsr->metadata, 0);
-        av_log(NULL, AV_LOG_INFO, "[Record] write_thread: wrote %d metadata entries\n", av_dict_count(fsr->metadata));
+        const AVDictionaryEntry *entry = NULL;
+        int count = 0;
+        while ((entry = av_dict_iterate(fsr->metadata, entry))) {
+            av_log(NULL, AV_LOG_INFO, "[Record][Metadata] write_thread writing: %s = %s\n", entry->key, entry->value);
+            count++;
+        }
+        av_log(NULL, AV_LOG_INFO, "[Record][Metadata] write_thread: wrote %d entries to ofmt_ctx\n", count);
+    } else {
+        av_log(NULL, AV_LOG_INFO, "[Record][Metadata] write_thread: no metadata to write\n");
     }
 
     // 写视频文件头
@@ -322,6 +373,19 @@ static int write_thread(void *arg)
     }
     header_written = 1;
     av_log(NULL, AV_LOG_INFO, "[Record] write_thread: header written, format=%s\n", fsr->ofmt_ctx->oformat->name);
+
+    // 打印 write_header 后 ofmt_ctx 中实际的 metadata
+    if (fsr->ofmt_ctx->metadata) {
+        const AVDictionaryEntry *entry = NULL;
+        int count = 0;
+        while ((entry = av_dict_iterate(fsr->ofmt_ctx->metadata, entry))) {
+            av_log(NULL, AV_LOG_INFO, "[Record][Metadata] after write_header ofmt_ctx: %s = %s\n", entry->key, entry->value);
+            count++;
+        }
+        av_log(NULL, AV_LOG_INFO, "[Record][Metadata] ofmt_ctx has %d entries after write_header\n", count);
+    } else {
+        av_log(NULL, AV_LOG_INFO, "[Record][Metadata] ofmt_ctx has no metadata after write_header\n");
+    }
 
     while (fsr->packetq.abort_request == 0) {
         int serial = 0;
@@ -456,6 +520,18 @@ void ff_stop_muxer(void *ffr)
     FSMuxer *fsr = (FSMuxer *)ffr;
     av_log(NULL, AV_LOG_INFO, "[Record] stop_muxer: aborting packet queue (nb_packets=%d, size=%d)\n",
            fsr->packetq.nb_packets, fsr->packetq.size);
+    // 打印停止录制时的 metadata 状态
+    if (fsr->metadata) {
+        const AVDictionaryEntry *entry = NULL;
+        int count = 0;
+        while ((entry = av_dict_iterate(fsr->metadata, entry))) {
+            av_log(NULL, AV_LOG_INFO, "[Record][Metadata] stop_muxer: %s = %s\n", entry->key, entry->value);
+            count++;
+        }
+        av_log(NULL, AV_LOG_INFO, "[Record][Metadata] stop_muxer: %d entries still held\n", count);
+    } else {
+        av_log(NULL, AV_LOG_INFO, "[Record][Metadata] stop_muxer: no metadata\n");
+    }
     packet_queue_abort(&fsr->packetq);
     return;
 }
@@ -475,7 +551,20 @@ int ff_destroy_muxer(void **ffr)
         av_log(NULL, AV_LOG_INFO, "[Record] destroy_muxer: write thread finished (result=%d), destroying packetq\n", r);
         // 在解码线程已结束后 destroy packetq（释放 pkt_list）
         packet_queue_destroy(&fsr->packetq);
+        // 打印销毁前的 metadata 状态
+        if (fsr->metadata) {
+            const AVDictionaryEntry *entry = NULL;
+            int count = 0;
+            while ((entry = av_dict_iterate(fsr->metadata, entry))) {
+                av_log(NULL, AV_LOG_INFO, "[Record][Metadata] destroy_muxer freeing: %s = %s\n", entry->key, entry->value);
+                count++;
+            }
+            av_log(NULL, AV_LOG_INFO, "[Record][Metadata] destroy_muxer: freeing %d entries\n", count);
+        } else {
+            av_log(NULL, AV_LOG_INFO, "[Record][Metadata] destroy_muxer: no metadata to free\n");
+        }
         av_dict_free(&fsr->metadata);
+        av_freep(&fsr->output_path);
         av_freep(ffr);
         av_log(NULL, AV_LOG_INFO, "[Record] destroy_muxer: done\n");
     }

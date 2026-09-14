@@ -2524,12 +2524,16 @@ static int ijkff_audio_samples_callback(void *opaque, int16_t *samples, int samp
     if (!_mediaPlayer)
         return -1000;
 
-    AVDictionary *dict = NULL;
+    __block AVDictionary *dict = NULL;
     if (metadata) {
         [metadata enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSString *obj, BOOL *stop) {
             av_dict_set(&dict, [key UTF8String], [obj UTF8String], 0);
+            NSLog(@"[Record][Metadata] ObjC → C: %@ = %@", key, obj);
         }];
+    } else {
+        NSLog(@"[Record][Metadata] ObjC → C: metadata is nil");
     }
+    NSLog(@"[Record][Metadata] ObjC: dict=%p, count=%d", dict, dict ? av_dict_count(dict) : 0);
     int ret = ijkmp_start_fast_record(_mediaPlayer, [filePath UTF8String], dict);
     av_dict_free(&dict);
     return ret;

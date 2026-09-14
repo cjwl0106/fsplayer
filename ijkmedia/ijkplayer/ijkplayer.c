@@ -917,6 +917,18 @@ int ijkmp_start_fast_record(IjkMediaPlayer *mp, const char *file_name, const AVD
 {
     assert(mp);
     MPTRACE("ijkmp_startFastRecord()\n");
+    // 打印传入的 metadata
+    if (metadata) {
+        const AVDictionaryEntry *entry = NULL;
+        int count = 0;
+        while ((entry = av_dict_iterate(metadata, entry))) {
+            av_log(NULL, AV_LOG_INFO, "[Record][Metadata] ijkplayer → ffp: %s = %s\n", entry->key, entry->value);
+            count++;
+        }
+        av_log(NULL, AV_LOG_INFO, "[Record][Metadata] ijkplayer: total %d entries\n", count);
+    } else {
+        av_log(NULL, AV_LOG_INFO, "[Record][Metadata] ijkplayer → ffp: metadata is NULL\n");
+    }
     pthread_mutex_lock(&mp->mutex);
     int retval = ffp_start_mux(mp->ffplayer, file_name, metadata);
     pthread_mutex_unlock(&mp->mutex);

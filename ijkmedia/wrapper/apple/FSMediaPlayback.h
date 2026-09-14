@@ -161,25 +161,31 @@ typedef enum FSAudioChannel {
 - (NSArray <NSString *> *)getInputFormatExtensions;
 
 #pragma mark - Record Metadata Keys
+// 当传入 metadata 时，录制格式会自动从 MP4 切换为 MOV，
+// 因为 FFmpeg 仅在 MOV 模式下才将以下 key 映射为 ©mak/©mod 等 QuickTime udta atom，
+// 这些 atom 能被 iOS AVAsset 和 Photos 正确识别。
 // 设备信息
-#define FS_METADATA_KEY_MAKE            @"com.apple.quicktime.make"              // 制造商 (如 "Apple")
-#define FS_METADATA_KEY_MODEL           @"com.apple.quicktime.model"             // 设备型号 (如 "iPhone 16 Pro")
-#define FS_METADATA_KEY_SOFTWARE        @"com.apple.quicktime.software"          // 软件名称/版本
+#define FS_METADATA_KEY_MAKE            @"make"              // 制造商 (如 "Hikvision") → ©mak
+#define FS_METADATA_KEY_MODEL           @"model"             // 设备型号 (如 "Master S2 Camera") → ©mod
+#define FS_METADATA_KEY_SOFTWARE        @"encoder"           // 软件名称/版本 → ©swr
 // 位置信息
-#define FS_METADATA_KEY_LOCATION        @"com.apple.quicktime.location.ISO6709"  // ISO 6709 格式坐标 (如 "+40.7128-074.0060/")
+#define FS_METADATA_KEY_LOCATION        @"location"          // ISO 6709 格式坐标 (如 "+40.7128-074.0060/") → ©xyz
 // 内容信息
-#define FS_METADATA_KEY_TITLE           @"title"                                 // 标题
-#define FS_METADATA_KEY_ARTIST          @"artist"                                // 作者
-#define FS_METADATA_KEY_ALBUM           @"album"                                 // 专辑
-#define FS_METADATA_KEY_GENRE           @"genre"                                 // 流派
-#define FS_METADATA_KEY_DESCRIPTION     @"description"                           // 描述
-#define FS_METADATA_KEY_CREATION_DATE   @"com.apple.quicktime.creationdate"      // 创建日期
-// 拍摄参数
-#define FS_METADATA_KEY_CAMERA_ISO      @"com.apple.quicktime.camera.iso"        // ISO 感光度
-#define FS_METADATA_KEY_CAMERA_EXPOSURE @"com.apple.quicktime.camera.exposure"   // 曝光时间
-#define FS_METADATA_KEY_CAMERA_FNUMBER  @"com.apple.quicktime.camera.fnumber"   // 光圈值 (f-number)
+#define FS_METADATA_KEY_TITLE           @"title"             // 标题 → ©nam
+#define FS_METADATA_KEY_ARTIST          @"artist"            // 作者 → ©ART
+#define FS_METADATA_KEY_ALBUM           @"album"             // 专辑 → ©alb
+#define FS_METADATA_KEY_GENRE           @"genre"             // 流派 → ©gen
+#define FS_METADATA_KEY_DESCRIPTION     @"comment"           // 描述 → ©cmt
+#define FS_METADATA_KEY_CREATION_DATE   @"date"              // 创建日期 → ©day
+// 拍摄参数（注意：这些 key 不在 FFmpeg ilst 映射中，MOV 文件不会写入）
+#define FS_METADATA_KEY_CAMERA_ISO      @"com.apple.quicktime.camera.iso"        // ISO 感光度 (仅 mdta 格式)
+#define FS_METADATA_KEY_CAMERA_EXPOSURE @"com.apple.quicktime.camera.exposure"   // 曝光时间 (仅 mdta 格式)
+#define FS_METADATA_KEY_CAMERA_FNUMBER  @"com.apple.quicktime.camera.fnumber"   // 光圈值 (仅 mdta 格式)
 
 - (int)startFastRecord:(NSString *)filePath;
+/// 传入 metadata 时，输出文件格式自动从 .mp4 切换为 .mov（文件名后缀会相应修改），
+/// 因为 FFmpeg 仅在 MOV 模式下才将 make/model 等 key 映射为 ©mak/©mod 等
+/// QuickTime udta atom，这些是 iOS AVAsset 和 Photos 能正确识别的格式。
 - (int)startFastRecord:(NSString *)filePath metadata:(nullable NSDictionary<NSString *, NSString *> *)metadata;
 - (int)stopFastRecord;
 - (int)startExactRecord:(NSString *)filePath;

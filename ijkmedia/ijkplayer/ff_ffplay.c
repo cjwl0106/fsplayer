@@ -6272,6 +6272,19 @@ int ffp_start_mux(FFPlayer *ffp, const char *file_name, const AVDictionary *meta
     av_log(NULL, AV_LOG_INFO, "[Record] ffp_start_mux: video_stream=%d, audio_stream=%d, find_stream_info=%d\n",
            is->video_stream, is->audio_stream, ffp->find_stream_info);
 
+    // 打印传入的 metadata
+    if (metadata) {
+        const AVDictionaryEntry *entry = NULL;
+        int count = 0;
+        while ((entry = av_dict_iterate(metadata, entry))) {
+            av_log(NULL, AV_LOG_INFO, "[Record][Metadata] ffp → muxer: %s = %s\n", entry->key, entry->value);
+            count++;
+        }
+        av_log(NULL, AV_LOG_INFO, "[Record][Metadata] ffp: total %d entries\n", count);
+    } else {
+        av_log(NULL, AV_LOG_INFO, "[Record][Metadata] ffp → muxer: metadata is NULL\n");
+    }
+
     // 传入解码器上下文，当 find_stream_info=0 时 codecpar 可能不完整，
     // 需要从解码器上下文同步完整的流参数（如 extradata、sample_rate 等）
     AVCodecContext *video_avctx = (is->video_stream >= 0) ? is->viddec.avctx : NULL;
