@@ -1,7 +1,7 @@
 # FSPlayer LGPL 编译 & iOS xcframework 生成操作指南
 
 > 本文档指导你从零开始，以 **LGPL + version3** 许可编译 FFmpeg 8，并生成 FSPlayer iOS xcframework。
-> OpenSSL 使用 **3.6.3**（Apache 2.0 许可，与 LGPL 兼容）。
+> OpenSSL 使用 **3.6.5**（Apache 2.0 许可，与 LGPL 兼容）。
 > MRFFToolChain 使用最新版本（`e80ccd8b`）。
 > 最终产物为真机 (arm64) + 模拟器 (arm64) 合并的单一 xcframework。
 
@@ -15,23 +15,23 @@
 > ./build-lgpl.sh verify     # 只验证 LGPL 许可
 > ```
 > 
-> **依赖库版本（2026-07-28 升级后）：**
+> **依赖库版本（2026-09-30 升级后）：**
 > | 库名 | 版本 | 说明 |
 > |------|------|------|
-> | openssl | 3.6.3 | 安全修复，保持 3.x 系列 |
+> | openssl | 3.6.5 | 安全修复，保持 3.x 系列 |
 > | opus | 1.6.1 | 已是最新 |
-> | dav1d | 1.5.4 | 安全修复 |
-> | uavs3d | 1.2.1 | 已是最新 |
+> | dav1d | 1.5.4 | 已是最新 |
+> | uavs3d | 1.2 | 已是最新 |
 > | smb2 | 6.2 | 已是最新 |
 > | webp | v1.6.0 | 已是最新 |
-> | xml2 | 2.15.3 | 安全修复 |
-> | bluray | 1.5.0 | **重大升级**，从 autotools 切换到 meson |
+> | xml2 | 2.15.4 | 小版本升级 |
+> | bluray | 1.5.1 | 小版本升级 |
 > | freetype | 2.14.3 | 已是最新 |
-> | fribidi | 1.0.16 | 已是最新 |
-> | harfbuzz | 14.3.0 | **重大升级**（从 12.3.2） |
-> | unibreak | 7.0 | 版本升级（从 6.1） |
-> | ass | 0.17.5 | 小版本升级 |
-> | ffmpeg | 8.1.2 | 已是最新 |
+> | fribidi | 1.0.17 | 小版本升级 |
+> | harfbuzz | 14.5.0 | 版本升级（从 14.3.1） |
+> | unibreak | 8.0 | 版本升级（从 7.0） |
+> | ass | 0.17.5 | 已是最新 |
+> | ffmpeg | 8.1.3 | 小版本升级 |
 
 ---
 

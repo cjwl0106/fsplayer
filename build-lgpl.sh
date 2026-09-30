@@ -79,6 +79,45 @@ function do_init() {
 # Step 2-4: 编译所有库
 # ============================================================
 
+# ============================================================
+# 辅助函数：恢复 universal 目录的 pkgconfig 和 include
+# lipo 会 rm -rf universal/$LIB_NAME，导致后续编译找不到依赖库的 pkgconfig 和 include
+# ============================================================
+
+# 需要恢复的库列表
+RESTORE_LIBS=(openssl opus dav1d uavs3d smb2 webp xml2 freetype fribidi harfbuzz unibreak ass bluray)
+
+function restore_universal_artifacts() {
+    echo "=== 恢复 universal 目录的 pkgconfig 和 include ==="
+    cd "$FFTOOLCHAIN_DIR"
+    for lib in "${RESTORE_LIBS[@]}"; do
+        for suffix in "" "-simulator"; do
+            if [[ "$suffix" == "-simulator" ]]; then
+                local uni_dir="build/product/ios/universal-simulator/${lib}"
+                local arch_dir="build/product/ios/${lib}-arm64_simulator"
+            else
+                local uni_dir="build/product/ios/universal/${lib}"
+                local arch_dir="build/product/ios/${lib}-arm64"
+            fi
+            # 恢复 pkgconfig
+            local src_pc="${arch_dir}/lib/pkgconfig"
+            local dst_pc="${uni_dir}/lib/pkgconfig"
+            if [[ -d "$src_pc" ]] && [[ ! -d "$dst_pc" ]]; then
+                mkdir -p "$dst_pc"
+                cp -Rf "$src_pc"/* "$dst_pc/"
+                echo "  恢复 $lib${suffix} pkgconfig"
+            fi
+            # 恢复 include
+            local src_inc="${arch_dir}/include"
+            local dst_inc="${uni_dir}/include"
+            if [[ -d "$src_inc" ]] && [[ ! -d "$dst_inc" ]]; then
+                cp -Rf "$src_inc" "${uni_dir}/"
+                echo "  恢复 $lib${suffix} include"
+            fi
+        done
+    done
+}
+
 function do_compile() {
     echo ""
     echo "========================================"
@@ -101,12 +140,16 @@ function do_compile() {
     done
 
     # Step 3: 编译 bluray（依赖 xml2，必须在 xml2 编译完成后才能编译）
+    # ⚠️ lipo 会删除 universal 目录，bluray 编译前需要恢复 xml2 等依赖库的 pkgconfig
+    restore_universal_artifacts
     for arch in "${ARCHS[@]}"; do
         echo "=== 编译 bluray ($arch) ==="
         ./main.sh compile -p ios -a $arch -l "${BLURAY[*]}"
     done
 
     # Step 4: 编译 FFmpeg 8（LGPLv3 模式）
+    # ⚠️ lipo 会删除 universal 目录，FFmpeg 编译前需要恢复所有依赖库的 pkgconfig
+    restore_universal_artifacts
     # arm64 必须使用 -c rebuild，确保 --enable-version3 被正确传递
     echo "=== 编译 FFmpeg 8 (arm64, rebuild) ==="
     ./main.sh compile -p ios -a arm64 -c rebuild -l "${FFMPEG_LIB[*]}"
