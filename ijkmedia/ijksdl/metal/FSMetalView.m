@@ -596,7 +596,7 @@ typedef CGRect NSRect;
     // 转成普通单帧：直接用合成纹理；videoPicture 仅用于建立 BGRA 显示管线（按像素格式选 shader）。
     // 合成结果即显示尺寸，pixelW/H 与 w/h 相等（采样时无需裁剪）。
     attach.videoTextures = @[texture];
-    attach.videoPicture = CVPixelBufferRetain(self.tileGridPipeline.compositedPixelBuffer); // 由 attach dealloc 释放
+    attach.videoPicture = self.tileGridPipeline.compositedPixelBuffer; // setter 会 CVPixelBufferRetain
     attach.pixelW = attach.w;
     attach.pixelH = attach.h;
     attach.tilePieces = nil; // 释放各 tile 的 pixelBuffer/textures

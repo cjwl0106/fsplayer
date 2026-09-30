@@ -34,6 +34,16 @@
 
 @implementation FSTilePiece
 
+- (void)setPixelBuffer:(CVPixelBufferRef)pixelBuffer
+{
+    if (_pixelBuffer != pixelBuffer) {
+        if (_pixelBuffer) {
+            CVPixelBufferRelease(_pixelBuffer);
+        }
+        _pixelBuffer = pixelBuffer ? CVPixelBufferRetain(pixelBuffer) : NULL;
+    }
+}
+
 - (void)dealloc
 {
     if (_pixelBuffer) {
@@ -55,11 +65,21 @@
 
 @implementation FSOverlayAttach
 
+- (void)setVideoPicture:(CVPixelBufferRef)videoPicture
+{
+    if (_videoPicture != videoPicture) {
+        if (_videoPicture) {
+            CVPixelBufferRelease(_videoPicture);
+        }
+        _videoPicture = videoPicture ? CVPixelBufferRetain(videoPicture) : NULL;
+    }
+}
+
 - (void)dealloc
 {
-    if (self.videoPicture) {
-        CVPixelBufferRelease(self.videoPicture);
-        self.videoPicture = NULL;
+    if (_videoPicture) {
+        CVPixelBufferRelease(_videoPicture);
+        _videoPicture = NULL;
     }
     if (self.videoCVTextures) {
         for (id item in self.videoCVTextures) {
@@ -198,7 +218,7 @@ static int vout_display_overlay_l(SDL_Vout *vout, SDL_VoutOverlay *overlay, SDL_
         for (int i = 0; i < got; i++) {
             if (!bufs[i]) continue;
             FSTilePiece *p = [[FSTilePiece alloc] init];
-            p.pixelBuffer = CVPixelBufferRetain(bufs[i]);
+            p.pixelBuffer = bufs[i]; // setter 会 CVPixelBufferRetain
             p.x = xs[i]; p.y = ys[i];
             p.w = ws[i]; p.h = hs[i];
             [pieces addObject:p];
@@ -224,7 +244,7 @@ static int vout_display_overlay_l(SDL_Vout *vout, SDL_VoutOverlay *overlay, SDL_
         attach.sarDen = overlay->sar_den;
         attach.autoZRotate = overlay->auto_z_rotate_degrees;
         attach.hasAlpha = overlay->has_alpha;
-        attach.videoPicture = CVPixelBufferRetain(videoPic);
+        attach.videoPicture = videoPic; // setter 会 CVPixelBufferRetain
         attach.overlay = SDL_TextureOverlay_Retain(sub_overlay);
         return [gl_view displayAttach:attach];
     } else {
