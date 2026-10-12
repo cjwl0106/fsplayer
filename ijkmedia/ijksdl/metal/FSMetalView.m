@@ -20,6 +20,7 @@
 #import "FSMetalPipelineMeta.h"
 #import "FSMetalBlurFilter.h"
 #import "FSMetalTileGridPipeline.h"
+#import "FSRenderRecorder.h"
 #import "ijksdl_vout_ios_gles2.h"
 #import "FSMediaPlayback.h"
 #import "FSDisplayLinkWrapper.h"
@@ -57,6 +58,8 @@ typedef CGRect NSRect;
 @property (atomic, strong) id<MTLTexture> backgroundTexture;
 @property (atomic, assign) BOOL needRebuildBackgroundTexture;
 @property (nonatomic, assign) BOOL screenSupportsHDR;
+// 渲染层录制：录 videoRenderingWillDisplay 处理后的帧
+@property (atomic, strong) FSRenderRecorder *renderRecorder;
 @end
 
 @implementation FSMetalView
@@ -627,6 +630,11 @@ typedef CGRect NSRect;
     
     if (self.displayDelegate && attach.videoPicture && [self.displayDelegate respondsToSelector:@selector(videoRenderingWillDisplay:videoFrame:)]) {
         attach.videoPicture = [self.displayDelegate videoRenderingWillDisplay:self videoFrame:attach.videoPicture];
+    }
+
+    // 渲染层录制：抓取处理后的帧（代理替换完成之后），立即拷贝、异步编码
+    if (self.renderRecorder && attach.videoPicture) {
+        [self.renderRecorder appendPixelBuffer:attach.videoPicture pts:attach.pts];
     }
 
     // HEIC tile-grid 模式允许 videoPicture 为 nil，只要 tilePieces 非空
@@ -1275,5 +1283,58 @@ typedef CGRect NSRect;
     }
 }
 #endif
+
+#pragma mark - Render Record
+
+- (int)startRenderRecord:(NSString *)filePath metadata:(NSDictionary<NSString *, NSString *> *)metadata
+{
+    [self.renderSnapshotLock lock];
+    FSOverlayAttach *attach = self.currentAttach;
+    CVPixelBufferRef pixelBuffer = attach.videoPicture;
+    if (!pixelBuffer && attach.tilePieces.count > 0) {
+        pixelBuffer = ((FSTilePiece *)attach.tilePieces.firstObject).pixelBuffer;
+    }
+    if (!pixelBuffer) {
+        [self.renderSnapshotLock unlock];
+        ALOGW("startRenderRecord: no current video picture\n");
+        return -1;
+    }
+
+    if (!self.renderRecorder) {
+        self.renderRecorder = [[FSRenderRecorder alloc] init];
+    }
+    int ret = [self.renderRecorder startRecord:filePath
+                                   pixelBuffer:pixelBuffer
+                                           fps:attach.fps
+                                      metadata:metadata];
+    if (ret != 0) {
+        self.renderRecorder = nil;
+    }
+    [self.renderSnapshotLock unlock];
+    return ret;
+}
+
+- (void)stopRenderRecord
+{
+    [self.renderSnapshotLock lock];
+    FSRenderRecorder *recorder = self.renderRecorder;
+    self.renderRecorder = nil;
+    [self.renderSnapshotLock unlock];
+    [recorder stopRecord];
+}
+
+- (void)recordAudioSamples:(const int16_t *)samples
+                 nbSamples:(int)nbSamples
+                sampleRate:(int)sampleRate
+                  channels:(int)channels
+                       pts:(double)pts
+{
+    [self.renderSnapshotLock lock];
+    FSRenderRecorder *recorder = self.renderRecorder;
+    [self.renderSnapshotLock unlock];
+    if (recorder) {
+        [recorder appendAudioSamples:samples nbSamples:nbSamples sampleRate:sampleRate channels:channels pts:pts];
+    }
+}
 
 @end

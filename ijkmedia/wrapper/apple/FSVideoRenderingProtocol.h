@@ -70,6 +70,8 @@ typedef struct SDL_TextureOverlay SDL_TextureOverlay;
 @property(nonatomic) float fps;
 @property(nonatomic) int sarNum;
 @property(nonatomic) int sarDen;
+//frame presentation timestamp in seconds; NAN when unknown
+@property(nonatomic) double pts;
 //degrees
 @property(nonatomic) int autoZRotate;
 @property(nonatomic) int hasAlpha;
@@ -196,6 +198,19 @@ typedef enum : NSUInteger {
 // 单次高斯模糊的 sigma（模糊半径），默认 30，值越大越模糊。
 @property(nonatomic) float backgroundBlurSigma;
 - (void)registerRefreshCurrentPicObserver:(nullable dispatch_block_t)block;
+
+// ---- 渲染层录制：录制 videoRenderingWillDisplay 处理后的视频帧 ----
+// 与 startFastRecord（直录原始码流，不含处理效果）互补。
+// 录制的是像素域重新编码的画面（有损、有额外开销），帧内容 = 代理替换后的帧。
+// 需在播放中调用；返回 0 表示成功。文件后缀建议 .mp4 或 .mov。
+- (int)startRenderRecord:(NSString *)filePath metadata:(nullable NSDictionary<NSString *, NSString *> *)metadata;
+- (void)stopRenderRecord;
+// 内部方法：由 FSPlayer 注册，转发播放输出的 PCM 到录制器（勿自行调用）
+- (void)recordAudioSamples:(const int16_t *)samples
+                 nbSamples:(int)nbSamples
+                sampleRate:(int)sampleRate
+                  channels:(int)channels
+                       pts:(double)pts;
 
 @end
 

@@ -611,7 +611,10 @@ typedef struct FFPlayer {
     int render_wait_start;
 
     ijk_audio_samples_callback audio_samples_callback;
-    
+    // 渲染层录制：带 pts 的 PCM 回调（samples 为 audio_tgt 格式 S16 交错，nb_samples 为本段样本数）
+    void (*render_record_audio_callback)(void *opaque, const int16_t *samples, int nb_samples, int sample_rate, int channels, double pts);
+    void *render_record_audio_opaque;
+
     FSSubtitlePreference sp;
     
     //icy update

@@ -1713,6 +1713,7 @@ static int queue_picture(FFPlayer *ffp, AVFrame *src_frame, double pts, double d
         vp->pos = pos;
         vp->demux_ms = demux_ms;
         vp->frame_serial = serial;
+        vp->bmp->pts = pts;
         vp->sar = av_guess_sample_aspect_ratio(is->ic, is->video_st, src_frame);
         vp->bmp->sar_num = vp->sar.num;
         vp->bmp->sar_den = vp->sar.den;
@@ -3059,6 +3060,10 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
             // len = 0;
             SDL_AoutFlushAudio(ffp->aout);
             update_sample_display(ffp, NULL, -1);
+            // 渲染层录制：seek 丢帧，通知录制侧丢弃未编码音频，保持音画对齐
+            if (ffp->render_record_audio_callback) {
+                ffp->render_record_audio_callback(ffp->render_record_audio_opaque, NULL, -1, 0, 0, 0.0);
+            }
             gotFrame = 0;
             break;
         }
@@ -3073,6 +3078,20 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
             memset(stream, 0, rest_len);
             if (!is->muted && is->audio_buf)
                 SDL_MixAudio(stream, (uint8_t *)is->audio_buf + is->audio_buf_index, rest_len, is->audio_volume);
+        }
+        // 渲染层录制：截获本段 PCM（含静音段），pts 由 audio_clock 反推：
+        // audio_clock 是当前解码帧的末尾时间，本段起点 = audio_clock - 帧内剩余秒数
+        if (ffp->render_record_audio_callback && is->audio_buf && !isnan(is->audio_clock)) {
+            int bytes_per_sample = av_get_bytes_per_sample(is->audio_tgt.fmt);
+            int ch = is->audio_tgt.ch_layout.nb_channels;
+            int frame_bytes = is->audio_buf_size;
+            int consumed_before = is->audio_buf_index;
+            double frame_dur = (double)frame_bytes / (ch * bytes_per_sample) / is->audio_tgt.freq;
+            double seg_pts = is->audio_clock - frame_dur * (double)(frame_bytes - consumed_before) / frame_bytes;
+            ffp->render_record_audio_callback(ffp->render_record_audio_opaque,
+                                              (const int16_t *)((uint8_t *)is->audio_buf + consumed_before),
+                                              rest_len / (ch * bytes_per_sample),
+                                              is->audio_tgt.freq, ch, seg_pts);
         }
         len -= rest_len;
         stream += rest_len;
@@ -6184,6 +6203,17 @@ void ffp_set_audio_sample_observer(FFPlayer *ffp, ijk_audio_samples_callback cb)
         return;
     }
     ffp->audio_samples_callback = cb;
+}
+
+void ffp_set_render_record_audio_observer(FFPlayer *ffp,
+                                          void (*cb)(void *opaque, const int16_t *samples, int nb_samples, int sample_rate, int channels, double pts),
+                                          void *opaque)
+{
+    if (!ffp) {
+        return;
+    }
+    ffp->render_record_audio_callback = cb;
+    ffp->render_record_audio_opaque = opaque;
 }
 
 void ffp_set_enable_accurate_seek(FFPlayer *ffp, int open)

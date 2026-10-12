@@ -53,6 +53,8 @@ struct SDL_VoutOverlay {
     float fps;
     int sar_num;
     int sar_den;
+    //frame presentation timestamp in seconds (from ffplay picture queue)
+    double pts;
     //for auto rotate video
     int auto_z_rotate_degrees;
     int has_alpha;

@@ -2559,6 +2559,46 @@ static int ijkff_audio_samples_callback(void *opaque, int16_t *samples, int samp
     return ijkmp_stop_exact_record(_mediaPlayer);
 }
 
+#pragma mark render record
+
+static void fs_render_record_audio_callback(void *opaque, const int16_t *samples, int nbSamples, int sampleRate, int channels, double pts)
+{
+    FSWeakHolder *weakHolder = (__bridge FSWeakHolder *)opaque;
+    FSPlayer *mpc = weakHolder.player;
+    if (!mpc) {
+        return;
+    }
+    UIView<FSVideoRenderingProtocol> *view = mpc->_videoRendering;
+    if (view && [view respondsToSelector:@selector(recordAudioSamples:nbSamples:sampleRate:channels:pts:)]) {
+        [(id)view recordAudioSamples:samples nbSamples:nbSamples sampleRate:sampleRate channels:channels pts:pts];
+    }
+}
+
+- (int)startRenderRecord:(NSString *)filePath metadata:(NSDictionary<NSString *, NSString *> *)metadata
+{
+    UIView<FSVideoRenderingProtocol> *view = _videoRendering;
+    if (!view || ![view respondsToSelector:@selector(startRenderRecord:metadata:)]) {
+        return -1000;
+    }
+    int ret = [(id)view startRenderRecord:filePath metadata:metadata];
+    if (ret == 0 && _mediaPlayer) {
+        // 注册 PCM 回调，录制音频轨（S16 交错，与播放输出一致）
+        ijkmp_set_render_record_audio_observer(_mediaPlayer, fs_render_record_audio_callback, (__bridge void *)_weakHolder);
+    }
+    return ret;
+}
+
+- (void)stopRenderRecord
+{
+    if (_mediaPlayer) {
+        ijkmp_set_render_record_audio_observer(_mediaPlayer, NULL, NULL);
+    }
+    UIView<FSVideoRenderingProtocol> *view = _videoRendering;
+    if (view && [view respondsToSelector:@selector(stopRenderRecord)]) {
+        [(id)view stopRenderRecord];
+    }
+}
+
 - (float)currentVMDiff
 {
     if (!_mediaPlayer)

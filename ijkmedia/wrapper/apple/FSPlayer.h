@@ -183,6 +183,14 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)didShutdown;
 
+#pragma mark Render Record
+// 渲染层录制：录制 videoRenderingWillDisplay 处理后的视频帧（像素域重编码）。
+// 与 startFastRecord（直录原始码流，不含处理效果）互补；两者不要同时使用。
+// 需在播放中调用；文件后缀建议 .mp4 或 .mov；返回 0 表示成功。
+- (int)startRenderRecord:(NSString *)filePath
+                metadata:(nullable NSDictionary<NSString *, NSString *> *)metadata;
+- (void)stopRenderRecord;
+
 #pragma mark KVO properties
 @property (nonatomic, readonly) FSMonitor *monitor;
 

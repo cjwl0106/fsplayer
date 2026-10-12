@@ -245,5 +245,9 @@ int  ijkmp_stop_fast_record(IjkMediaPlayer *mp);
 int ijkmp_start_exact_record(IjkMediaPlayer *mp,const char *file_name);
 int  ijkmp_stop_exact_record(IjkMediaPlayer *mp);
 void ijkmp_refresh_picture(IjkMediaPlayer *mp);
+/* 渲染层录制：注册带 pts 的 PCM 回调（samples=NULL && nb_samples<0 表示 flush） */
+void ijkmp_set_render_record_audio_observer(IjkMediaPlayer *mp,
+                                            void (*cb)(void *opaque, const int16_t *samples, int nb_samples, int sample_rate, int channels, double pts),
+                                            void *opaque);
 
 #endif

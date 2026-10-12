@@ -124,6 +124,10 @@ int       ffp_stop_mux(FFPlayer *ffp);
 int       ffp_start_recorder(FFPlayer *ffp, const char *file_name);
 int       ffp_stop_recorder(FFPlayer *ffp);
 void      ffp_refresh_picture(FFPlayer *ffp);
+/* 渲染层录制：注册带 pts 的 PCM 回调（samples=NULL && nb_samples<0 表示 flush） */
+void      ffp_set_render_record_audio_observer(FFPlayer *ffp,
+                                               void (*cb)(void *opaque, const int16_t *samples, int nb_samples, int sample_rate, int channels, double pts),
+                                               void *opaque);
 
 
 #endif

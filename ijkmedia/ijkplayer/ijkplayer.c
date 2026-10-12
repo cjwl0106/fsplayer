@@ -969,6 +969,16 @@ int ijkmp_stop_exact_record(IjkMediaPlayer *mp)
     return retval;
 }
 
+void ijkmp_set_render_record_audio_observer(IjkMediaPlayer *mp,
+                                            void (*cb)(void *opaque, const int16_t *samples, int nb_samples, int sample_rate, int channels, double pts),
+                                            void *opaque)
+{
+    assert(mp);
+    pthread_mutex_lock(&mp->mutex);
+    ffp_set_render_record_audio_observer(mp->ffplayer, cb, opaque);
+    pthread_mutex_unlock(&mp->mutex);
+}
+
 void ijkmp_refresh_picture(IjkMediaPlayer *mp)
 {
     assert(mp);
