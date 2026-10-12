@@ -721,7 +721,10 @@ typedef CGRect NSRect;
     if (hasTiles) {
         for (FSTilePiece *piece in attach.tilePieces) {
             if (!piece.pixelBuffer && piece.avframe) {
-                piece.pixelBuffer = [self tilePixelBufferFromAVFrame:piece.avframe]; // +1 retained
+                // helper 返回 +1；setter 内部会再 retain，这里先赋值再放掉 helper 的引用
+                CVPixelBufferRef pb = [self tilePixelBufferFromAVFrame:piece.avframe]; // +1
+                piece.pixelBuffer = pb; // setter 会 CVPixelBufferRetain
+                if (pb) CVPixelBufferRelease(pb);
             }
         }
     }
@@ -732,9 +735,10 @@ typedef CGRect NSRect;
     // side data stamped as CVBuffer attachments) so the rest of the Metal pipeline —
     // texture cache, colorspace detection, snapshots — keeps working unchanged.
     if (!attach.videoPicture && attach.avframe) {
-        CVPixelBufferRef pb = [self pixelBufferFromAVFrame:attach.avframe];
+        CVPixelBufferRef pb = [self pixelBufferFromAVFrame:attach.avframe]; // +1
         if (pb) {
-            attach.videoPicture = pb; // +1 retained; balanced by FSOverlayAttach dealloc
+            attach.videoPicture = pb; // setter 会 CVPixelBufferRetain，随后放掉 helper 的引用
+            CVPixelBufferRelease(pb);
             // Derive pixelW/H from the actual buffer, not frame->width: VideoToolbox
             // buffers are padded to coded width, and the crop calc in the picture
             // pipeline needs the buffer's real (padded) dimensions.

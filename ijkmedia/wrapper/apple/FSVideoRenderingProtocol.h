@@ -229,6 +229,8 @@ typedef enum : NSUInteger {
 
 @optional
 //you can replace the video frame
+// 返回值是借用引用：返回 videoFrame 本身则无引用变化；返回其他 buffer（如自建或池化的），
+// 实现者需自行释放自己持有的引用，渲染器会通过 setter CVPixelBufferRetain 持有它。
 - (CVPixelBufferRef _Nullable)videoRenderingWillDisplay:(id<FSVideoRenderingProtocol>_Nonnull)renderer videoFrame:(CVPixelBufferRef)videoFrame;
 
 @optional

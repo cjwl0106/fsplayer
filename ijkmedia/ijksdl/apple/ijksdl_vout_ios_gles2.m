@@ -34,6 +34,16 @@
 
 @implementation FSTilePiece
 
+- (void)setPixelBuffer:(CVPixelBufferRef)pixelBuffer
+{
+    if (_pixelBuffer != pixelBuffer) {
+        if (_pixelBuffer) {
+            CVPixelBufferRelease(_pixelBuffer);
+        }
+        _pixelBuffer = pixelBuffer ? CVPixelBufferRetain(pixelBuffer) : NULL;
+    }
+}
+
 - (void)dealloc
 {
     if (_pixelBuffer) {
@@ -59,14 +69,24 @@
 
 @implementation FSOverlayAttach
 
+- (void)setVideoPicture:(CVPixelBufferRef)videoPicture
+{
+    if (_videoPicture != videoPicture) {
+        if (_videoPicture) {
+            CVPixelBufferRelease(_videoPicture);
+        }
+        _videoPicture = videoPicture ? CVPixelBufferRetain(videoPicture) : NULL;
+    }
+}
+
 - (void)dealloc
 {
-    if (self.videoPicture) {
-        CVPixelBufferRelease(self.videoPicture);
-        self.videoPicture = NULL;
+    if (_videoPicture) {
+        CVPixelBufferRelease(_videoPicture);
+        _videoPicture = NULL;
     }
-    if (self.avframe) {
-        av_frame_free(&self->_avframe);
+    if (_avframe) {
+        av_frame_free(&_avframe);
     }
     // FSTilePiece 内部 dealloc 自动释放其 pixelBuffer
     if (self.videoCVTextures) {
