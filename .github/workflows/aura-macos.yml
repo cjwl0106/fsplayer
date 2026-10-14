@@ -27,6 +27,9 @@ jobs:
   build:
     name: build-aura-macos
     runs-on: macos-15
+    # WORKFLOW_TOKEN 是存在名为 workflow 的 environment 里的 environment-level secret，
+    # 不声明这个 environment 就读不到它（repo 级 secret 列表是空的）。
+    environment: workflow
     steps:
     - name: Checkout
       uses: actions/checkout@v7
@@ -143,3 +146,32 @@ jobs:
         gh release create "${TAG}" --target "${GITHUB_REF_NAME}" -t "Aura macOS ${VERSION}" \
           --notes-file "$RUNNER_TEMP/release-notes.md" \
           "dist/Aura-macos-${VERSION}.zip"
+
+    # Release 建好之后，把 zip 的校验和交给 homebrew-aura 去更新 cask。
+    #
+    # 这里必须用 WORKFLOW_TOKEN 而不是内建的 github.token：GITHUB_TOKEN 只在
+    # 触发它的那个仓库里有权限，dispatch 另一个仓库的 workflow 一律 403
+    # （Resource not accessible by integration）。官方文档也是这么说的 ——
+    # 想在 workflow 里触发别处的 workflow，得用 PAT 或 GitHub App installation token。
+    # 给 workflow 加 permissions: actions: write 也没用，别再试那条路。
+    #
+    # WORKFLOW_TOKEN 是用户级 PAT，存在名为 workflow 的 environment 里（environment-level secret）。
+    - name: Trigger homebrew-aura cask update
+      if: ${{ env.HAS_MACOS == '1' && inputs.publish == true }}
+      env:
+        GH_TOKEN: ${{ secrets.WORKFLOW_TOKEN }}
+      run: |
+        if [[ -z "${GH_TOKEN}" ]]; then
+          echo "::error::secret WORKFLOW_TOKEN 未配置，无法更新 homebrew-aura 的 cask"
+          echo "::error::请在 debugly/fsplayer 仓库添加该 secret（只需 homebrew-aura 的 Actions: write 权限）"
+          exit 1
+        fi
+
+        SHA256=$(shasum -a 256 "dist/Aura-macos-${VERSION}.zip" | awk '{print $1}')
+        echo "::notice::Aura-macos-${VERSION}.zip 校验和：${SHA256}"
+        echo "::notice::触发 homebrew-aura cask 更新，版本号：${VERSION}"
+
+        gh workflow run update-cask.yml \
+          --repo debugly/homebrew-aura \
+          -f version="${VERSION}" \
+          -f checksum="${SHA256}"
