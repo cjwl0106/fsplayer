@@ -24,6 +24,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
 #import <mach/mach_time.h>
+#include "ijksdl/ijksdl_log.h"
 // 待编码帧队列深度：超过即丢帧（丢最旧帧会打乱时间戳，这里直接丢新帧）
 static const int kMaxPendingFrames = 60;
 // 待编码音频队列深度（字节）：约 2 秒 48kHz 立体声 S16
@@ -158,7 +159,7 @@ typedef struct {
         case kCVPixelFormatType_420YpCbCr8PlanarFullRange:
             break;
         default:
-            NSLog(@"[RenderRecord] unsupported pixel format: %@, abort", @( (char *)&_pixelFormat ));
+            ALOGE("[RenderRecord] unsupported pixel format: %4s, abort", (char *)&_pixelFormat);
             return -3;
     }
 
@@ -167,7 +168,7 @@ typedef struct {
                                         fileType:[self _fileTypeForPath:filePath]
                                            error:&error];
     if (!_writer) {
-        NSLog(@"[RenderRecord] create writer failed: %@", error);
+        ALOGE("[RenderRecord] create writer failed: %s", error.localizedDescription.UTF8String ?: "unknown");
         return -4;
     }
 
@@ -232,7 +233,7 @@ typedef struct {
     _audioChannels = 0;
 
     if (![_writer startWriting]) {
-        NSLog(@"[RenderRecord] startWriting failed: %@", _writer.error);
+        ALOGE("[RenderRecord] startWriting failed: %s", _writer.error.localizedDescription.UTF8String ?: "unknown");
         return -5;
     }
     __weak typeof(self) wself = self;
@@ -240,8 +241,8 @@ typedef struct {
         [wself _feedEncoder];
     }];
 
-    NSLog(@"[RenderRecord] started: %@, %dx%d, fmt=%4s, fps=%.1f",
-          filePath, _width, _height, (char *)&_pixelFormat, fpsValue);
+    ALOGI("[RenderRecord] started: %s, %dx%d, fmt=%4s, fps=%.1f",
+          filePath.UTF8String, _width, _height, (char *)&_pixelFormat, fpsValue);
     return 0;
 }
 
@@ -270,7 +271,7 @@ typedef struct {
         [_queueLock unlock];
         if (!_droppedAny) {
             _droppedAny = YES;
-            NSLog(@"[RenderRecord] encoder too slow, dropping frames");
+            ALOGW("[RenderRecord] encoder too slow, dropping frames");
         }
         return;
     }
@@ -329,7 +330,7 @@ typedef struct {
         _audioChannels = channels;
         [self _setupAudioInputIfNeed];
         if (!_audioInput) {
-            NSLog(@"[RenderRecord] create audio input failed, record video only");
+            ALOGE("[RenderRecord] create audio input failed, record video only");
         }
     }
     if (!_audioInput) {
@@ -341,7 +342,7 @@ typedef struct {
         [_queueLock unlock];
         if (!_droppedAny) {
             _droppedAny = YES;
-            NSLog(@"[RenderRecord] audio encoder too slow, dropping samples");
+            ALOGW("[RenderRecord] audio encoder too slow, dropping samples");
         }
         return;
     }
@@ -423,7 +424,7 @@ typedef struct {
                                           1, &timing, 1, &seg.bytes, &sampleBuffer);
             if (status == noErr && sampleBuffer) {
                 if (![_audioInput appendSampleBuffer:sampleBuffer]) {
-                    NSLog(@"[RenderRecord] appendSampleBuffer failed");
+                    ALOGE("[RenderRecord] appendSampleBuffer failed");
                 }
                 CFRelease(sampleBuffer);
             }
@@ -527,15 +528,18 @@ typedef struct {
         }
         CMTime pts = CMTimeMakeWithSeconds(rel, 600);
         if (![_adaptor appendPixelBuffer:frame.pixelBuffer withPresentationTime:pts]) {
-            NSLog(@"[RenderRecord] appendPixelBuffer failed: %@", _writer.error);
+            ALOGE("[RenderRecord] appendPixelBuffer failed: %s", _writer.error.localizedDescription.UTF8String ?: "unknown");
         }
         CVPixelBufferRelease(frame.pixelBuffer);
     }
 }
 
-- (void)stopRecord
+- (void)stopRecordWithCompletion:(void (^)(NSError * _Nullable error))completion
 {
     if (!_writer) {
+        if (completion) {
+            completion(nil);
+        }
         return;
     }
     _stopping = YES;
@@ -570,7 +574,11 @@ typedef struct {
         [input markAsFinished];
         [audioInput markAsFinished];
         [writer finishWritingWithCompletionHandler:^{
-            NSLog(@"[RenderRecord] finished, status=%ld, error=%@", (long)writer.status, writer.error);
+            ALOGI("[RenderRecord] finished, status=%ld, error=%s", (long)writer.status,
+                  writer.error.localizedDescription.UTF8String ?: "none");
+            if (completion) {
+                completion(writer.error);
+            }
         }];
     });
 }

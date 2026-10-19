@@ -62,6 +62,7 @@ static void (^_logHandler)(FSLogLevel level, NSString *tag, NSString *msg);
 @implementation FSPlayer {
     IjkMediaPlayer *_mediaPlayer;
     UIView<FSVideoRenderingProtocol>* _videoRendering;
+    NSString *_renderRecordPath;
     FSPlayerMessagePool *_msgPool;
 
     NSInteger _videoWidth;
@@ -2534,19 +2535,38 @@ static void fs_render_record_audio_callback(void *opaque, const int16_t *samples
     if (ret == 0 && _mediaPlayer) {
         // 注册 PCM 回调，录制音频轨（S16 交错，与播放输出一致）
         ijkmp_set_render_record_audio_observer(_mediaPlayer, fs_render_record_audio_callback, (__bridge void *)_weakHolder);
+        _renderRecordPath = filePath;
     }
     return ret;
 }
 
-- (void)stopRenderRecord
+- (void)stopRenderRecordWithCompletion:(void (^)(NSString *filePath, NSError * _Nullable error))completion
 {
     if (_mediaPlayer) {
         ijkmp_set_render_record_audio_observer(_mediaPlayer, NULL, NULL);
     }
     UIView<FSVideoRenderingProtocol> *view = _videoRendering;
-    if (view && [view respondsToSelector:@selector(stopRenderRecord)]) {
-        [(id)view stopRenderRecord];
+    if (!view || ![view respondsToSelector:@selector(stopRenderRecordWithCompletion:)]) {
+        if (completion) {
+            completion(nil, nil);
+        }
+        return;
     }
+    __weak typeof(self) wself = self;
+    [(id)view stopRenderRecordWithCompletion:^(NSError * _Nullable error) {
+        __strong typeof(wself) sself = wself;
+        if (completion) {
+            completion(sself ? sself->_renderRecordPath : nil, error);
+        }
+        if (!error && sself) {
+            sself->_renderRecordPath = nil;
+        }
+    }];
+}
+
+- (void)stopRenderRecord
+{
+    [self stopRenderRecordWithCompletion:nil];
 }
 
 - (float)currentVMDiff

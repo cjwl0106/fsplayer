@@ -54,7 +54,9 @@ NS_ASSUME_NONNULL_BEGIN
                       pts:(double)pts;
 
 /// 停止录制并等待写完文件尾。异步完成。
-- (void)stopRecord;
+/// completion 在文件完全写完（moov 已落盘，可直接保存/移动）后回调一次；
+/// error 非空表示写入失败。传 NULL 则只打日志（与旧行为一致）。
+- (void)stopRecordWithCompletion:(nullable void (^)(NSError * _Nullable error))completion;
 
 @end
 

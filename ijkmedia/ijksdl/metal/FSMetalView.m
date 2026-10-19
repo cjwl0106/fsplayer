@@ -317,7 +317,8 @@ typedef CGRect NSRect;
         if (activeHDR) {
             CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearSRGB);
             metalLayer.colorspace = cs;
-            ALOGI("update layer colorspace:%@",cs);
+            CFStringRef csName = CGColorSpaceGetName(cs);
+            ALOGI("update layer colorspace:%s", CFStringGetCStringPtr(csName, kCFStringEncodingUTF8) ?: "unknown");
             CGColorSpaceRelease(cs);
         } else {
             metalLayer.colorspace = nil;
@@ -1437,13 +1438,13 @@ typedef CGRect NSRect;
     return ret;
 }
 
-- (void)stopRenderRecord
+- (void)stopRenderRecordWithCompletion:(void (^)(NSError * _Nullable error))completion
 {
     [self.renderSnapshotLock lock];
     FSRenderRecorder *recorder = self.renderRecorder;
     self.renderRecorder = nil;
     [self.renderSnapshotLock unlock];
-    [recorder stopRecord];
+    [recorder stopRecordWithCompletion:completion];
 }
 
 - (void)recordAudioSamples:(const int16_t *)samples
