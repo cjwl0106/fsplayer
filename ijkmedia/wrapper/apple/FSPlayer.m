@@ -2528,10 +2528,17 @@ static void fs_render_record_audio_callback(void *opaque, const int16_t *samples
 - (int)startRenderRecord:(NSString *)filePath metadata:(NSDictionary<NSString *, NSString *> *)metadata
 {
     UIView<FSVideoRenderingProtocol> *view = _videoRendering;
-    if (!view || ![view respondsToSelector:@selector(startRenderRecord:metadata:)]) {
+    if (!view || ![view respondsToSelector:@selector(startRenderRecord:metadata:audioSampleRate:audioChannels:)]) {
         return -1000;
     }
-    int ret = [(id)view startRenderRecord:filePath metadata:metadata];
+    // 播放输出的音频参数（audio_tgt），预建录制器的音频轨；
+    // 无音频流时 freq 为 0，录制器只录视频
+    int audioSampleRate = 0, audioChannels = 0;
+    if (_mediaPlayer) {
+        audioSampleRate = (int)ijkmp_get_property_int64(_mediaPlayer, FFP_PROP_INT64_AUDIO_SAMPLE_RATE, 0);
+        audioChannels   = (int)ijkmp_get_property_int64(_mediaPlayer, FFP_PROP_INT64_AUDIO_CHANNELS, 0);
+    }
+    int ret = [(id)view startRenderRecord:filePath metadata:metadata audioSampleRate:audioSampleRate audioChannels:audioChannels];
     if (ret == 0 && _mediaPlayer) {
         // 注册 PCM 回调，录制音频轨（S16 交错，与播放输出一致）
         ijkmp_set_render_record_audio_observer(_mediaPlayer, fs_render_record_audio_callback, (__bridge void *)_weakHolder);

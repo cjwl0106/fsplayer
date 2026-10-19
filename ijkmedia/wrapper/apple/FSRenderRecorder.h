@@ -35,10 +35,14 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, readonly) BOOL recording;
 
 /// 启动录制。pixelBuffer 仅用于确定视频尺寸与像素格式，不会被持有。
+/// audioSampleRate/audioChannels 为播放输出的音频参数（>0 时预建音频轨；
+/// 0 表示无音频或参数未知，只录视频）。
 /// @return 成功返回 0
 - (int)startRecord:(NSString *)filePath
        pixelBuffer:(CVPixelBufferRef)pixelBuffer
                fps:(float)fps
+       audioSampleRate:(int)audioSampleRate
+      audioChannels:(int)audioChannels
           metadata:(nullable NSDictionary<NSString *, NSString *> *)metadata;
 
 /// 追加一帧。pts 为帧的显示时间戳（秒），未知时传 NAN（内部按 fps 递增）。

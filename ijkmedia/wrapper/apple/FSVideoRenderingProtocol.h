@@ -214,7 +214,11 @@ typedef enum : NSUInteger {
 // 与 startFastRecord（直录原始码流，不含处理效果）互补。
 // 录制的是像素域重新编码的画面（有损、有额外开销），帧内容 = 代理替换后的帧。
 // 需在播放中调用；返回 0 表示成功。文件后缀建议 .mp4 或 .mov。
-- (int)startRenderRecord:(NSString *)filePath metadata:(nullable NSDictionary<NSString *, NSString *> *)metadata;
+// audioSampleRate/audioChannels 为播放输出音频参数（>0 时录制音频轨，0 只录视频）。
+- (int)startRenderRecord:(NSString *)filePath
+                metadata:(nullable NSDictionary<NSString *, NSString *> *)metadata
+        audioSampleRate:(int)audioSampleRate
+          audioChannels:(int)audioChannels;
 // completion 在文件完全写完后回调（可直接保存/移动），error 非空表示写入失败；传 NULL 只打日志
 - (void)stopRenderRecordWithCompletion:(nullable void (^)(NSError * _Nullable error))completion;
 // 内部方法：由 FSPlayer 注册，转发播放输出的 PCM 到录制器（勿自行调用）

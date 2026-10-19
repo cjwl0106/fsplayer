@@ -6323,6 +6323,14 @@ int64_t ffp_get_property_int64(FFPlayer *ffp, int id, int64_t default_value)
              if (!ffp)
                  return default_value;
              return ffp->channel_config;
+        case FFP_PROP_INT64_AUDIO_SAMPLE_RATE:
+            if (!ffp || !ffp->is)
+                return default_value;
+            return ffp->is->audio_tgt.freq;
+        case FFP_PROP_INT64_AUDIO_CHANNELS:
+            if (!ffp || !ffp->is)
+                return default_value;
+            return ffp->is->audio_tgt.ch_layout.nb_channels;
         default:
             return default_value;
     }

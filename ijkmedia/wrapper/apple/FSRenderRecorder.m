@@ -64,6 +64,9 @@ typedef struct {
     BOOL _gotFirstFrame;
     BOOL _gotFirstAudio;
     double _firstAudioPts;
+    BOOL _firstAudioAppend;
+    BOOL _audioAppendFailedLogged;
+    BOOL _videoAppendFailedLogged;
     BOOL _droppedAny;
 
     // 音频参数（首个音频段确定）
@@ -110,29 +113,44 @@ typedef struct {
     if (_audioInput || _audioSampleRate <= 0 || _audioChannels <= 0) {
         return;
     }
+    // 码率按采样率×声道自适应：iOS 硬件 AAC 编码器上限 ≈ sampleRate×3×ch
+    // （实测 16kHz mono 48k 过/48.5k 拒，8kHz mono 24k 过/32k 拒，16kHz stereo 96k 过/100k 拒）。
+    // 固定 128kbps 在低采样率/单声道（如 16kHz mono）会被拒（-12651），乘 0.9 留余量
+    int audioBitRate = (int)MIN(128000, _audioSampleRate * 3.0 * _audioChannels * 0.9);
     NSDictionary *audioSettings = @{
         AVFormatIDKey: @(kAudioFormatMPEG4AAC),
         AVSampleRateKey: @(_audioSampleRate),
         AVNumberOfChannelsKey: @(_audioChannels),
-        AVEncoderBitRateKey: @(128000),
+        AVEncoderBitRateKey: @(audioBitRate),
     };
     _audioInput = [[AVAssetWriterInput alloc] initWithMediaType:AVMediaTypeAudio
                                                  outputSettings:audioSettings];
     _audioInput.expectsMediaDataInRealTime = YES;
+    // 只 addInput；requestMediaDataWhenReadyOnQueue 要求 writer 已 startWriting，
+    // 由 startRecord 在 startWriting 成功后统一调用 _startAudioInputFeeding
     if (_writer && [_writer canAddInput:_audioInput]) {
         [_writer addInput:_audioInput];
-        __weak typeof(self) wself = self;
-        [_audioInput requestMediaDataWhenReadyOnQueue:_writerQueue usingBlock:^{
-            [wself _feedAudioEncoder];
-        }];
     } else {
         _audioInput = nil;
     }
 }
 
+- (void)_startAudioInputFeeding
+{
+    if (!_audioInput) {
+        return;
+    }
+    __weak typeof(self) wself = self;
+    [_audioInput requestMediaDataWhenReadyOnQueue:_writerQueue usingBlock:^{
+        [wself _feedAudioEncoder];
+    }];
+}
+
 - (int)startRecord:(NSString *)filePath
        pixelBuffer:(CVPixelBufferRef)pixelBuffer
                fps:(float)fps
+       audioSampleRate:(int)audioSampleRate
+      audioChannels:(int)audioChannels
           metadata:(nullable NSDictionary<NSString *, NSString *> *)metadata
 {
     if (!filePath || !pixelBuffer) {
@@ -159,7 +177,7 @@ typedef struct {
         case kCVPixelFormatType_420YpCbCr8PlanarFullRange:
             break;
         default:
-            ALOGE("[RenderRecord] unsupported pixel format: %4s, abort", (char *)&_pixelFormat);
+            ALOGE("[RenderRecord] unsupported pixel format: %.4s, abort", (char *)&_pixelFormat);
             return -3;
     }
 
@@ -219,30 +237,51 @@ typedef struct {
 
     [_writer addInput:_videoInput];
 
+    // 音频输入必须在 startWriting 之前添加（startWriting 后 canAddInput 返回 NO）。
+    // 参数来自播放输出（audio_tgt），无音频流时保持 0，只录视频。
+    if (audioSampleRate > 0 && audioChannels > 0) {
+        _audioSampleRate = audioSampleRate;
+        _audioChannels = audioChannels;
+        [self _setupAudioInputIfNeed];
+        if (!_audioInput) {
+            ALOGE("[RenderRecord] create audio input failed, record video only");
+        }
+    } else {
+        _audioSampleRate = 0;
+        _audioChannels = 0;
+    }
+
     _firstPts = NAN;
     _lastPts = NAN;
     _gotFirstFrame = NO;
     _gotFirstAudio = NO;
     _firstAudioPts = 0;
+    _firstAudioAppend = YES;
+    _audioAppendFailedLogged = NO;
+    _videoAppendFailedLogged = NO;
     _droppedAny = NO;
     _stopping = NO;
     _pendingCount = 0;
     _pendingAudioCount = 0;
     _pendingAudioBytes = 0;
-    _audioSampleRate = 0;
-    _audioChannels = 0;
 
     if (![_writer startWriting]) {
         ALOGE("[RenderRecord] startWriting failed: %s", _writer.error.localizedDescription.UTF8String ?: "unknown");
         return -5;
     }
+    // session 必须在任何 append 之前 start。音视频 pts 都相对首帧归零，
+    // 起点固定用 0；不能等视频首帧才 start——音频首段往往先到，append 会被拒
+    // （iOS 上返回 NO 并把 writer 置为 Failed，整场录制报废）
+    [_writer startSessionAtSourceTime:CMTimeMakeWithSeconds(0, 600)];
     __weak typeof(self) wself = self;
     [_videoInput requestMediaDataWhenReadyOnQueue:_writerQueue usingBlock:^{
         [wself _feedEncoder];
     }];
+    [self _startAudioInputFeeding];
 
-    ALOGI("[RenderRecord] started: %s, %dx%d, fmt=%4s, fps=%.1f",
-          filePath.UTF8String, _width, _height, (char *)&_pixelFormat, fpsValue);
+    ALOGI("[RenderRecord] started: %s, %dx%d, fmt=%.4s, fps=%.1f, audio=%s",
+          filePath.UTF8String, _width, _height, (char *)&_pixelFormat, fpsValue,
+          _audioInput ? "yes" : "no");
     return 0;
 }
 
@@ -324,16 +363,17 @@ typedef struct {
         return;
     }
 
-    // 首段确定音频参数并惰性创建音频输入
-    if (_audioSampleRate == 0) {
-        _audioSampleRate = sampleRate;
-        _audioChannels = channels;
-        [self _setupAudioInputIfNeed];
-        if (!_audioInput) {
-            ALOGE("[RenderRecord] create audio input failed, record video only");
-        }
-    }
+    // 音频输入已在 startRecord 时按播放输出参数预建；参数不符（理论上不会发生）时忽略
     if (!_audioInput) {
+        return;
+    }
+    if (sampleRate != _audioSampleRate || channels != _audioChannels) {
+        static BOOL warned = NO;
+        if (!warned) {
+            warned = YES;
+            ALOGW("[RenderRecord] audio params mismatch: got %dHz/%dch, expect %dHz/%dch, drop",
+                  sampleRate, channels, _audioSampleRate, _audioChannels);
+        }
         return;
     }
 
@@ -419,14 +459,36 @@ typedef struct {
         if (status == kCMBlockBufferNoErr && blockBuffer) {
             CMSampleTimingInfo timing = { duration, pts, kCMTimeInvalid };
             CMSampleBufferRef sampleBuffer = NULL;
+            // sampleSizeArray 语义是"每个样本的字节数"，必须传 bytesPerSample；
+            // 传整段 bytes 会被算成 numSamples*bytes 的总大小，编码器直接拒绝
+            size_t sampleSizeEntry = (size_t)bytesPerSample;
             status = CMSampleBufferCreate(kCFAllocatorDefault, blockBuffer, TRUE,
                                           NULL, NULL, format, seg.bytes / bytesPerSample,
-                                          1, &timing, 1, &seg.bytes, &sampleBuffer);
+                                          1, &timing, 1, &sampleSizeEntry, &sampleBuffer);
             if (status == noErr && sampleBuffer) {
-                if (![_audioInput appendSampleBuffer:sampleBuffer]) {
-                    ALOGE("[RenderRecord] appendSampleBuffer failed");
+                if ([_audioInput appendSampleBuffer:sampleBuffer]) {
+                    if (_firstAudioAppend) {
+                        _firstAudioAppend = NO;
+                        ALOGI("[RenderRecord] first audio append ok: %dHz/%dch, segBytes=%d, numSamples=%d",
+                              _audioSampleRate, _audioChannels, seg.bytes, seg.bytes / bytesPerSample);
+                    }
+                } else {
+                    // 首次失败时把底层 OSStatus 和完整参数打出来，便于定位编码器拒绝原因
+                    if (!_audioAppendFailedLogged) {
+                        _audioAppendFailedLogged = YES;
+                        NSError *err = _writer.error;
+                        NSError *under = err.userInfo[NSUnderlyingErrorKey];
+                        ALOGE("[RenderRecord] appendSampleBuffer failed: code=%ld, under=%ld, "
+                              "%dHz/%dch, segBytes=%d, numSamples=%d, bps=%d, dur=%.4f, pts=%.4f, status=%ld",
+                              (long)err.code, (long)(under ? under.code : 0),
+                              _audioSampleRate, _audioChannels, seg.bytes, seg.bytes / bytesPerSample,
+                              bytesPerSample, CMTimeGetSeconds(duration), CMTimeGetSeconds(pts),
+                              (long)_writer.status);
+                    }
                 }
                 CFRelease(sampleBuffer);
+            } else {
+                ALOGE("[RenderRecord] CMSampleBufferCreate failed: %d", (int)status);
             }
             CFRelease(blockBuffer);
         }
@@ -513,12 +575,9 @@ typedef struct {
         [_queueLock unlock];
 
         if (!_gotFirstFrame) {
-            if (isnan(frame.pts)) {
-                frame.pts = 0;
-            }
-            _firstPts = frame.pts;
+            _firstPts = isnan(frame.pts) ? 0 : frame.pts;
             _gotFirstFrame = YES;
-            [_writer startSessionAtSourceTime:CMTimeMakeWithSeconds(0, 600)];
+            // session 已在 startRecord 中提前 start（起点 0），此处只记录首帧 pts 基准
         }
 
         // 相对首帧的时间轴
@@ -528,7 +587,21 @@ typedef struct {
         }
         CMTime pts = CMTimeMakeWithSeconds(rel, 600);
         if (![_adaptor appendPixelBuffer:frame.pixelBuffer withPresentationTime:pts]) {
-            ALOGE("[RenderRecord] appendPixelBuffer failed: %s", _writer.error.localizedDescription.UTF8String ?: "unknown");
+            if (!_videoAppendFailedLogged) {
+                _videoAppendFailedLogged = YES;
+                NSError *err = _writer.error;
+                NSError *under = err.userInfo[NSUnderlyingErrorKey];
+                ALOGE("[RenderRecord] appendPixelBuffer failed: code=%ld, under=%ld, "
+                      "%dx%d, fmt=%.4s, pts=%.4f, status=%ld",
+                      (long)err.code, (long)(under ? under.code : 0),
+                      _width, _height, (char *)&_pixelFormat, CMTimeGetSeconds(pts),
+                      (long)_writer.status);
+            }
+            if (_writer.status == AVAssetWriterStatusFailed) {
+                // writer 已进入 Failed，后续 append 全部无效，直接停止编码循环
+                CVPixelBufferRelease(frame.pixelBuffer);
+                break;
+            }
         }
         CVPixelBufferRelease(frame.pixelBuffer);
     }

@@ -120,6 +120,9 @@
 #define FFP_PROP_INT64_SHARE_CACHE_DATA                 20210
 #define FFP_PROP_INT64_IMMEDIATE_RECONNECT              20211
 #define FFP_PROP_INT64_CHANNEL_CONFIG                   30000
+/* 渲染层录制：播放输出的音频参数（audio_tgt），freq 为 0 表示无音频流 */
+#define FFP_PROP_INT64_AUDIO_SAMPLE_RATE                30001
+#define FFP_PROP_INT64_AUDIO_CHANNELS                   30002
 
 //
 #define FFP_MSG_VIDEO_Z_ROTATE_DEGREE                   30001 /* arg1 = degrees */

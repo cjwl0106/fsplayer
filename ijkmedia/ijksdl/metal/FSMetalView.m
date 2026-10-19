@@ -1410,7 +1410,10 @@ typedef CGRect NSRect;
 
 #pragma mark - Render Record
 
-- (int)startRenderRecord:(NSString *)filePath metadata:(NSDictionary<NSString *, NSString *> *)metadata
+- (int)startRenderRecord:(NSString *)filePath
+                metadata:(NSDictionary<NSString *, NSString *> *)metadata
+        audioSampleRate:(int)audioSampleRate
+          audioChannels:(int)audioChannels
 {
     [self.renderSnapshotLock lock];
     FSOverlayAttach *attach = self.currentAttach;
@@ -1430,6 +1433,8 @@ typedef CGRect NSRect;
     int ret = [self.renderRecorder startRecord:filePath
                                    pixelBuffer:pixelBuffer
                                            fps:attach.fps
+                               audioSampleRate:audioSampleRate
+                                 audioChannels:audioChannels
                                       metadata:metadata];
     if (ret != 0) {
         self.renderRecorder = nil;
