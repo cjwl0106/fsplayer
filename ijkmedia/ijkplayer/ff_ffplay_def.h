@@ -407,6 +407,11 @@ typedef struct VideoState {
     int audio_resample_corrections;     /* synchronize_audio 触发采样数校正的次数 */
     int audio_sync_skipped_wait;        /* 等待首帧视频时 audio_decode_frame 返回 -1 的次数 */
     int audio_behind_drop_count;        /* 视频主模式下 consume_audio_buffer 强丢(快进)音频的次数（原子操作） */
+
+    /* --- RTSP 视频主时钟起播对齐字段 --- */
+    int audio_start_align_drop_count;   /* 起播对齐丢弃的过旧音频帧数 */
+    double audio_start_align_drop_dur;  /* 起播对齐累计丢弃时长（s），超 3s 自停 */
+    int audio_start_align_done;         /* 音频首次追上视频后置 1，对齐只作用于起播阶段 */
 } VideoState;
 
 /*****************************************************************************

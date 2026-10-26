@@ -2572,6 +2572,32 @@ static int audio_thread(void *arg)
                 af->duration = av_q2d((AVRational){frame->nb_samples, frame->sample_rate});
                 af->demux_ms = is->auddec.pkt_demux_ms;
 
+                // 起播对齐：视频主时钟 + 实时流时，丢弃 pts 早于视频时钟的音频帧，
+                // 避免音频带着起播前积压的旧内容起播（IPC 2s GOP 下偏差可达 2s），
+                // 视频主时钟只能靠 10% 变速硬追，造成长时间语速异常。
+                // 带 3s 自限保护：流侧 pts 异常（如跳回）时不会无限丢音频。
+                // 音频首次追上视频后置 audio_start_align_done，对齐只作用于起播阶段，
+                // 不影响播放中途的同步（中途偏差仍走 swr 补偿路径）。
+                // 受 sync_av_start 管辖：该选项关闭表示用户不要起播阶段音视频协调
+                // （音频不等视频直接出声），此时也不应丢音频去对齐。
+                if (ffp->sync_av_start &&
+                    is->realtime && get_master_sync_type(is) == AV_SYNC_VIDEO_MASTER &&
+                    !is->audio_start_align_done &&
+                    !isnan(af->pts) && !isnan(get_clock(&is->vidclk)) &&
+                    is->audio_start_align_drop_dur < 3.0) {
+                    double behind = get_clock(&is->vidclk) - af->pts;
+                    if (behind > 0.04) {
+                        is->audio_start_align_drop_count++;
+                        is->audio_start_align_drop_dur += af->duration;
+                        av_log(NULL, AV_LOG_INFO, "audio start align: drop behind frame pts=%.3f, behind=%.3f, dropped=%d/%.2fs\n",
+                               af->pts, behind, is->audio_start_align_drop_count, is->audio_start_align_drop_dur);
+                        av_frame_unref(frame);
+                        continue;
+                    } else {
+                        is->audio_start_align_done = 1;
+                    }
+                }
+
                 av_frame_move_ref(af->frame, frame);
                 frame_queue_push(&is->sampq);
                 if (is->audioq.serial != af->frame_serial) {
@@ -2746,6 +2772,13 @@ static int synchronize_audio(VideoState *is, int nb_samples)
                     min_nb_samples = ((nb_samples * (100 - SAMPLE_CORRECTION_PERCENT_MAX) / 100));
                     max_nb_samples = ((nb_samples * (100 + SAMPLE_CORRECTION_PERCENT_MAX) / 100));
                     wanted_nb_samples = av_clip(wanted_nb_samples, min_nb_samples, max_nb_samples);
+                    // 实时流接近收敛（|diff| < 2*阈值）时把补偿量缩到 1/4：
+                    // 满幅补偿会在阈值边缘来回穿越，且 sampq 濒临断流时仍全速追赶，
+                    // 造成「变速↔断流」循环的语速忽快忽慢。缩小补偿让收敛更平滑。
+                    // 仅限实时流：本地文件有完整存货，原满幅补偿收敛更快且无断流风险。
+                    if (is->realtime && fabs(diff) < 2.0 * is->audio_diff_threshold) {
+                        wanted_nb_samples = nb_samples + (wanted_nb_samples - nb_samples) / 4;
+                    }
                 }
                 av_log(NULL, AV_LOG_TRACE, "diff=%f adiff=%f sample_diff=%d apts=%0.3f %f\n",
                         diff, avg_diff, wanted_nb_samples - nb_samples,
@@ -3136,6 +3169,32 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
            } else {
                gotFrame = 1;
                is->audio_buf_size = audio_size;
+               // 起播对齐（渲染侧）：视频主时钟 + 实时流时，丢弃 pts 早于视频时钟的
+               // 已解码音频帧。解码侧对齐拦不住起播前已入队 sampq 的积压帧
+               //（IPC 2s GOP 下约 1.7s），它们会照播不误造成 2s 音画错位。
+               // 带 3s 自限保护：流侧 pts 异常时不会无限丢音频。
+               // 与解码侧一致：音频首次追上视频后关闭，且受 sync_av_start 管辖。
+               if (ffp->sync_av_start &&
+                   is->realtime && get_master_sync_type(is) == AV_SYNC_VIDEO_MASTER &&
+                   !is->audio_start_align_done &&
+                   !isnan(is->audio_clock) && !isnan(get_clock(&is->vidclk)) &&
+                   is->audio_start_align_drop_dur < 3.0) {
+                   // audio_clock 是当前帧末尾 pts，帧起点 = 末尾 - 帧时长
+                   double frame_dur = (is->audio_tgt.bytes_per_sec > 0)
+                                      ? (double)audio_size / is->audio_tgt.bytes_per_sec : 0.0;
+                   double frame_start = is->audio_clock - frame_dur;
+                   double behind = get_clock(&is->vidclk) - frame_start;
+                   if (behind > 0.04) {
+                       is->audio_start_align_drop_count++;
+                       is->audio_start_align_drop_dur += frame_dur;
+                       av_log(NULL, AV_LOG_INFO, "audio start align(render): drop behind frame start=%.3f, behind=%.3f, dropped=%d/%.2fs\n",
+                              frame_start, behind, is->audio_start_align_drop_count, is->audio_start_align_drop_dur);
+                       is->audio_buf_index = is->audio_buf_size;
+                       continue;
+                   } else {
+                       is->audio_start_align_done = 1;
+                   }
+               }
            }
            is->audio_buf_index = 0;
         }
