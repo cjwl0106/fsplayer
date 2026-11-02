@@ -412,6 +412,7 @@ typedef struct VideoState {
     int audio_start_align_drop_count;   /* 起播对齐丢弃的过旧音频帧数 */
     double audio_start_align_drop_dur;  /* 起播对齐累计丢弃时长（s），超 3s 自停 */
     int audio_start_align_done;         /* 音频首次追上视频后置 1，对齐只作用于起播阶段 */
+    int audio_silence_last_callback;    /* 上次音频回调输出的是静音（断流/丢弃），恢复时需淡入防爆音 */
 } VideoState;
 
 /*****************************************************************************

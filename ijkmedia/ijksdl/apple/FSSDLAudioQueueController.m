@@ -109,9 +109,9 @@
     UInt32 propValue = 1;
     AudioQueueSetProperty(audioQueueRef, kAudioQueueProperty_EnableTimePitch, &propValue, sizeof(propValue));
     propValue = 1;
-    AudioQueueSetProperty(_audioQueueRef, kAudioQueueProperty_TimePitchBypass, &propValue, sizeof(propValue));
+    AudioQueueSetProperty(audioQueueRef, kAudioQueueProperty_TimePitchBypass, &propValue, sizeof(propValue));
     propValue = kAudioQueueTimePitchAlgorithm_Spectral;
-    AudioQueueSetProperty(_audioQueueRef, kAudioQueueProperty_TimePitchAlgorithm, &propValue, sizeof(propValue));
+    AudioQueueSetProperty(audioQueueRef, kAudioQueueProperty_TimePitchAlgorithm, &propValue, sizeof(propValue));
     
     status = AudioQueueStart(audioQueueRef, NULL);
     if (status != noErr) {

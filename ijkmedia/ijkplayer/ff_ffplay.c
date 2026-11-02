@@ -2768,6 +2768,15 @@ static int synchronize_audio(VideoState *is, int nb_samples)
                 avg_diff = is->audio_diff_cum * (1.0 - is->audio_diff_avg_coef);
 
                 if (fabs(avg_diff) >= is->audio_diff_threshold) {
+                    /* live-edge 保护：实时流音频按网络实时到达，sampq 已空时音频物理上
+                       不可能持续快于 1×，此时加速补偿只会掏空队列造成周期性断流，
+                       断流恢复处的 PCM 不连续表现为爆音。跳过补偿并重置滤波器，
+                       把固定残差当作音画偏移（远比反复变速/断流可接受）。 */
+                    if (is->realtime && frame_queue_nb_remaining(&is->sampq) == 0) {
+                        is->audio_diff_cum = 0;
+                        is->audio_diff_avg_count = 0;
+                        return nb_samples;
+                    }
                     wanted_nb_samples = nb_samples + (int)(diff * is->audio_src.freq);
                     min_nb_samples = ((nb_samples * (100 - SAMPLE_CORRECTION_PERCENT_MAX) / 100));
                     max_nb_samples = ((nb_samples * (100 + SAMPLE_CORRECTION_PERCENT_MAX) / 100));
@@ -3134,6 +3143,21 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
 
     ffp->audio_callback_time = av_gettime_relative();
 
+    /* 爆音抑制：上一轮回调没有拿到音频帧（断流/起播对齐丢弃/seek 丢帧）时，
+       本轮回调恢复的第一段 PCM 与之前的静音之间是全幅波形跳变，听感为「爆音」。
+       对恢复后的第一段数据做 8ms 线性淡入消除跳变。 */
+    if (is->audio_silence_last_callback && is->audio_buf && is->audio_buf_index < is->audio_buf_size) {
+        int fade_bytes = (int)(is->audio_tgt.freq * 0.008) * is->audio_tgt.frame_size;
+        int avail = is->audio_buf_size - is->audio_buf_index;
+        if (fade_bytes > avail)
+            fade_bytes = avail;
+        int16_t *p = (int16_t *)((uint8_t *)is->audio_buf + is->audio_buf_index);
+        int n = fade_bytes / (int)sizeof(int16_t);
+        for (int i = 0; i < n; i++)
+            p[i] = (int16_t)((int64_t)p[i] * (i + 1) / (n + 1));
+        is->audio_silence_last_callback = 0;
+    }
+
     if (ffp->pf_playback_rate_changed) {
         ffp->pf_playback_rate_changed = 0;
 #if defined(__ANDROID__)
@@ -3165,6 +3189,7 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
                memset(stream, 0, len);
                is->audio_buf = NULL;
                is->audio_buf_size = 0;
+               is->audio_silence_last_callback = 1;
                break;
            } else {
                gotFrame = 1;
@@ -3190,6 +3215,7 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
                        av_log(NULL, AV_LOG_INFO, "audio start align(render): drop behind frame start=%.3f, behind=%.3f, dropped=%d/%.2fs\n",
                               frame_start, behind, is->audio_start_align_drop_count, is->audio_start_align_drop_dur);
                        is->audio_buf_index = is->audio_buf_size;
+                       is->audio_silence_last_callback = 1;
                        continue;
                    } else {
                        is->audio_start_align_done = 1;
@@ -3210,6 +3236,7 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
                 ffp->render_record_audio_callback(ffp->render_record_audio_opaque, NULL, -1, 0, 0, 0.0);
             }
             gotFrame = 0;
+            is->audio_silence_last_callback = 1;
             break;
         }
         rest_len = is->audio_buf_size - is->audio_buf_index;
