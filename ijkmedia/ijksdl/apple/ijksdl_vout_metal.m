@@ -33,16 +33,6 @@
 
 @implementation FSTilePiece
 
-- (void)setPixelBuffer:(CVPixelBufferRef)pixelBuffer
-{
-    if (_pixelBuffer != pixelBuffer) {
-        if (_pixelBuffer) {
-            CVPixelBufferRelease(_pixelBuffer);
-        }
-        _pixelBuffer = pixelBuffer ? CVPixelBufferRetain(pixelBuffer) : NULL;
-    }
-}
-
 - (void)dealloc
 {
     if (_avframe) {
@@ -64,22 +54,8 @@
 
 @implementation FSOverlayAttach
 
-- (void)setVideoPicture:(CVPixelBufferRef)videoPicture
-{
-    if (_videoPicture != videoPicture) {
-        if (_videoPicture) {
-            CVPixelBufferRelease(_videoPicture);
-        }
-        _videoPicture = videoPicture ? CVPixelBufferRetain(videoPicture) : NULL;
-    }
-}
-
 - (void)dealloc
 {
-    if (_videoPicture) {
-        CVPixelBufferRelease(_videoPicture);
-        _videoPicture = NULL;
-    }
     if (self.avframe) {
         av_frame_free(&self->_avframe);
     }
