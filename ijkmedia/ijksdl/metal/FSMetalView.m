@@ -37,6 +37,10 @@ typedef CGRect NSRect;
 @property (nonatomic, strong) id<MTLCommandQueue>commandQueue;
 @property (nonatomic, assign) CVMetalTextureCacheRef pictureTextureCache;
 @property (atomic, strong) FSMetalRenderer *picturePipeline;
+// 渲染管线缓存：key = fragmentName|fullRange|hdr|matrix|transfer|colorPixelFormat|blend。
+// 特效开关切换时 CVPixelBuffer 在 NV12(相机原始) ↔ BGRA(SDK 输出) 之间来回，
+// 原逻辑每次都销毁重建 PSO（shader 重编译，切换瞬间掉帧）；缓存后切换零成本。
+@property (atomic, strong) NSMutableDictionary<NSString *, FSMetalRenderer *> *pipelineCache;
 // HEIC tile-grid 合成管线：把多个 tile 合成成一张完整画面缓存到 attach。
 @property (atomic, strong) FSMetalTileGridPipeline *tileGridPipeline;
 @property (atomic, strong) FSMetalSubtitlePipeline *subPipeline;
@@ -108,6 +112,7 @@ typedef CGRect NSRect;
     _drawingAttach = nil;
     _tileGridPipeline = nil;
     _picturePipeline = nil;
+    _pipelineCache = nil;
     _subPipeline = nil;
     _backgroundPipeline = nil;
     _backgroundTexture = nil;
@@ -134,6 +139,7 @@ typedef CGRect NSRect;
     _backgroundBlurIterations = 3;
     _backgroundBlurSigma = 30.0;
     _renderSnapshotLock = [[NSLock alloc]init];
+    _pipelineCache = [[NSMutableDictionary alloc] init];
     _allowHDRDirectDisplay    = YES;
 #if !TARGET_OS_TV
     if (@available(iOS 16.0, macOS 10.11, *)) {
@@ -526,14 +532,30 @@ typedef CGRect NSRect;
     if (!pixelBuffer) {
         return NO;
     }
-    
+
     if (self.picturePipeline) {
         if ([self.picturePipeline matchPixelBuffer:pixelBuffer]) {
             return YES;
         }
-        ALOGI("pixel format not match,need rebuild pipeline");
+        ALOGI("pixel format not match, lookup pipeline cache");
     }
-    
+
+    // 以 meta + 目标像素格式 + blend 作为缓存 key 查找已建管线，
+    // 命中则直接复用，避免 shader 重编译（特效开关切换时每帧格式来回切换）
+    FSMetalPipelineMeta *meta = [FSMetalPipelineMeta createWithCVPixelbuffer:pixelBuffer];
+    if (!meta) {
+        return NO;
+    }
+    NSString *key = [NSString stringWithFormat:@"%@|%d|%d|%ld|%ld|%lu|%d",
+                     meta.fragmentName, meta.fullRange, meta.hdrContent,
+                     (long)meta.convertMatrixType, (long)meta.transferFunc,
+                     (unsigned long)self.colorPixelFormat, blend];
+    FSMetalRenderer *cached = self.pipelineCache[key];
+    if (cached) {
+        self.picturePipeline = cached;
+        return YES;
+    }
+
     FSMetalRenderer *picturePipeline = [[FSMetalRenderer alloc] initWithDevice:self.device colorPixelFormat:self.colorPixelFormat];
 #if !TARGET_OS_TV
     if (@available(iOS 16.0, macOS 10.11, *)) {
@@ -545,6 +567,8 @@ typedef CGRect NSRect;
     if (!created) {
         ALOGE("create RenderPipeline failed.");
         picturePipeline = nil;
+    } else {
+        self.pipelineCache[key] = picturePipeline;
     }
 
     self.picturePipeline = picturePipeline;
