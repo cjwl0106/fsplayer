@@ -39,7 +39,7 @@ static const int kMaxPendingAudioSegs = 4096;
 static const int kMaxPendingAudioBytes = 48000 * 2 * 2 * 2;
 // 录制帧率上限：渲染源可能高于此值（如 50fps），按 pts 抽帧降到目标帧率，
 // 编码量与发热等比下降；源帧率低于此值时不影响（原帧率录制）
-static const double kMaxRecordFps = 30.0;
+static const double kMaxRecordFps = 60.0;
 // 音频合段目标时长（秒）：播放回调切出的段极小（实测 0.5ms/段），逐段走
 // CMSampleBufferCreate+append 每秒约 2000 次，CPU 白烧且发热；攒够此时长
 // 再作为一个段入队，段处理降到 ~50 次/秒
