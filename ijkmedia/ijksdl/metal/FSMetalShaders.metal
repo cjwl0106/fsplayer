@@ -555,3 +555,84 @@ fragment float4 argbFragmentShader(RasterizerData input [[stage_in]],
     float4 grab = textureY.sample(textureSampler, input.textureCoordinate);
     return float4(rgb_adjust(grab.gra, convertMatrix.adjustment), grab.b);
 }
+
+// MARK: - 录制器像素格式转换 compute kernel（BGRA ↔ NV12，BT.709 full range）
+
+// 一个线程处理一个 2x2 像素块：写 4 个 Y + 1 组 CbCr。
+// gid 对应色度坐标（即 2x2 块索引），Y 平面覆盖 [2x, 2x+2) x [2y, 2y+2)。
+// 两个方向共用此 kernel，用 direction 区分：
+//   0 = BGRA → NV12（srcTexture=BGRA, dstY/dstUV 为 NV12 两平面）
+//   1 = NV12 → BGRA（srcTexture=Y 平面, srcUVTexture=UV 平面, dstTexture=BGRA）
+kernel void fsRecConvertKernel(texture2d<float, access::read> srcTexture    [[ texture(0) ]],
+                               texture2d<float, access::read> srcUVTexture [[ texture(1) ]],
+                               texture2d<float, access::write> dstTexture  [[ texture(2) ]],
+                               texture2d<float, access::write> dstYTexture [[ texture(3) ]],
+                               texture2d<float, access::write> dstUVTexture [[ texture(4) ]],
+                               constant int &direction [[ buffer(0) ]],
+                               uint2 gid [[ thread_position_in_grid ]])
+{
+    // 色度网格：每线程负责一个 2x2 块
+    uint2 chromaPos = gid;
+    uint2 basePos = chromaPos * 2;
+
+    if (direction == 0) {
+        // ---- BGRA → NV12 ----
+        if (basePos.x >= srcTexture.get_width() || basePos.y >= srcTexture.get_height()) {
+            return;
+        }
+        // 读 2x2 块（read 返回 [0,1] 归一化值）
+        float4 c00 = srcTexture.read(basePos);
+        float4 c10 = srcTexture.read(basePos + uint2(1, 0));
+        float4 c01 = srcTexture.read(basePos + uint2(0, 1));
+        float4 c11 = srcTexture.read(basePos + uint2(1, 1));
+
+        // BT.709 full range: Y = 0.2126R + 0.7152G + 0.0722B
+        float y00 = 0.2126 * c00.b + 0.7152 * c00.g + 0.0722 * c00.r;
+        float y10 = 0.2126 * c10.b + 0.7152 * c10.g + 0.0722 * c10.r;
+        float y01 = 0.2126 * c01.b + 0.7152 * c01.g + 0.0722 * c01.r;
+        float y11 = 0.2126 * c11.b + 0.7152 * c11.g + 0.0722 * c11.r;
+
+        dstYTexture.write(float4(y00, 0, 0, 1), basePos);
+        if (basePos.x + 1 < dstYTexture.get_width()) {
+            dstYTexture.write(float4(y10, 0, 0, 1), basePos + uint2(1, 0));
+        }
+        if (basePos.y + 1 < dstYTexture.get_height()) {
+            dstYTexture.write(float4(y01, 0, 0, 1), basePos + uint2(0, 1));
+            if (basePos.x + 1 < dstYTexture.get_width()) {
+                dstYTexture.write(float4(y11, 0, 0, 1), basePos + uint2(1, 1));
+            }
+        }
+
+        // 色度：2x2 平均后转 Cb/Cr
+        float3 avg = (c00.rgb + c10.rgb + c01.rgb + c11.rgb) * 0.25;
+        // avg 是 BGRA 纹理的 .rgb = B,G,R
+        float b = avg.x, g = avg.y, r = avg.z;
+        float Y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        float Cb = 0.5389 * (b - Y) + 0.5;
+        float Cr = 0.6350 * (r - Y) + 0.5;
+        dstUVTexture.write(float4(Cb, Cr, 0, 1), chromaPos);
+    } else {
+        // ---- NV12 → BGRA ----
+        if (chromaPos.x >= srcUVTexture.get_width() || chromaPos.y >= srcUVTexture.get_height()) {
+            return;
+        }
+        float4 uv = srcUVTexture.read(chromaPos);
+        float Cb = uv.r - 0.5;
+        float Cr = uv.g - 0.5;
+
+        // BT.709 full range 反向
+        for (int dy = 0; dy < 2; dy++) {
+            for (int dx = 0; dx < 2; dx++) {
+                uint2 pos = basePos + uint2(dx, dy);
+                if (pos.x >= srcTexture.get_width() || pos.y >= srcTexture.get_height()) {
+                    continue;
+                }
+                float Y = srcTexture.read(pos).r;
+                float R = Y + 1.5748 * Cr;
+                float G = Y - 0.1873 * Cb - 0.4681 * Cr;
+                float B = Y + 1.8556 * Cb;
+                dstTexture.write(float4(B, G, R, 1.0), pos);
+            }
+        }
+    }
+}

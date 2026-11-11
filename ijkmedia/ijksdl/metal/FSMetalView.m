@@ -1450,10 +1450,12 @@ typedef CGRect NSRect;
         ALOGW("startRenderRecord: no current video picture\n");
         return -1;
     }
-
-    if (!self.renderRecorder) {
-        self.renderRecorder = [[FSRenderRecorder alloc] init];
+    if (!self.renderRecorder) {        self.renderRecorder = [[FSRenderRecorder alloc] init];
     }
+    [self.renderSnapshotLock unlock];
+
+    // startRecord 放在锁外执行：内部虽已异步化（微秒级返回），
+    // 也不该占用渲染线程的临界区
     int ret = [self.renderRecorder startRecord:filePath
                                    pixelBuffer:pixelBuffer
                                            fps:attach.fps
@@ -1463,7 +1465,6 @@ typedef CGRect NSRect;
     if (ret != 0) {
         self.renderRecorder = nil;
     }
-    [self.renderSnapshotLock unlock];
     return ret;
 }
 
