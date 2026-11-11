@@ -2525,6 +2525,15 @@ static void fs_render_record_audio_callback(void *opaque, const int16_t *samples
     }
 }
 
+- (void)prepareRenderRecord
+{
+    UIView<FSVideoRenderingProtocol> *view = _videoRendering;
+    if (!view || ![view respondsToSelector:@selector(warmUpRenderRecord)]) {
+        return;
+    }
+    [(id)view warmUpRenderRecord];
+}
+
 - (int)startRenderRecord:(NSString *)filePath metadata:(NSDictionary<NSString *, NSString *> *)metadata
 {
     UIView<FSVideoRenderingProtocol> *view = _videoRendering;

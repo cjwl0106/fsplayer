@@ -1434,6 +1434,53 @@ typedef CGRect NSRect;
 
 #pragma mark - Render Record
 
+// 预热录制管线（幂等）：提前创建共享 Metal 转换器 + 预热硬编会话，消除
+// 第一次录制时 Metal kernel 编码与 VideoToolbox 编码器初始化造成的画面卡顿。
+// 全部在后台线程，起播前后均可调用。
+// 无当前帧（播放未起）时用默认 1280x720 NV12 预热：硬编会话与真实录制
+// 尺寸不同时系统复用率略降，但编码器初始化的大头开销已经消除
+- (void)warmUpRenderRecord
+{
+    [self.renderSnapshotLock lock];
+    FSOverlayAttach *attach = self.currentAttach;
+    CVPixelBufferRef pixelBuffer = attach.videoPicture;
+    float fps = attach.fps;
+    if (!pixelBuffer && attach.tilePieces.count > 0) {
+        pixelBuffer = ((FSTilePiece *)attach.tilePieces.firstObject).pixelBuffer;
+    }
+    // 锁内 retain：锁外渲染线程可能随时释放 videoPicture（属性赋值即释放
+    // 旧值）。warmUp 内部异步 block 接管所有权并在结束时释放，本方法
+    // 返回前即可释放自己这份引用
+    if (pixelBuffer) {
+        CVPixelBufferRetain(pixelBuffer);
+    }
+    [self.renderSnapshotLock unlock];
+
+    CVPixelBufferRef fallback = NULL;
+    if (!pixelBuffer) {
+        NSDictionary *attrs = @{
+            (__bridge NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+            (__bridge NSString *)kCVPixelBufferWidthKey: @(1280),
+            (__bridge NSString *)kCVPixelBufferHeightKey: @(720),
+        };
+        CVPixelBufferCreate(kCFAllocatorDefault, 1280, 720,
+                            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                            (__bridge CFDictionaryRef)attrs, &fallback);
+        pixelBuffer = fallback;
+        fps = 30.0f;
+    }
+
+    [FSRenderRecorder warmUpResourcesWithPixelBuffer:pixelBuffer
+                                                 fps:fps
+                                     audioSampleRate:0
+                                       audioChannels:0];
+    // warmUp 已在入口同步 retain 接管异步 block 的使用，这里立即释放本方
+    // 法的引用（fallback 是本方法创建的，同样释放）
+    if (pixelBuffer) {
+        CVPixelBufferRelease(pixelBuffer);
+    }
+}
+
 - (int)startRenderRecord:(NSString *)filePath
                 metadata:(NSDictionary<NSString *, NSString *> *)metadata
         audioSampleRate:(int)audioSampleRate

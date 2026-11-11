@@ -189,6 +189,12 @@ NS_ASSUME_NONNULL_BEGIN
 // 需在播放中调用；文件后缀建议 .mp4 或 .mov；返回 0 表示成功。
 - (int)startRenderRecord:(NSString *)filePath
                 metadata:(nullable NSDictionary<NSString *, NSString *> *)metadata;
+// 预热录制管线（幂等，重复调用无副作用）：提前在后台创建 Metal 转换器、
+// 预热 VideoToolbox 硬编会话，消除第一次开始录制时画面卡顿一会的问题。
+// 设置渲染视图后即可调用，播放未起时用默认 1280x720 预热（硬编会话与
+// 真实录制尺寸不同时复用率略降，但初始化的大头开销已消除）；起播出画后
+// 再调用一次可用真实尺寸预热得更彻底。
+- (void)prepareRenderRecord;
 // 停止录制。completion 在文件完全写完（moov 已落盘，可直接保存到相册/移动）后回调一次，
 // error 非空表示写入失败；传 NULL 则只打日志。completion 在未知队列回调，如需更新 UI 请自行派发主线程。
 // filePath 回传调用方 startRenderRecord 时传入的路径（便于闭包内直接使用，未记录时为 nil）。

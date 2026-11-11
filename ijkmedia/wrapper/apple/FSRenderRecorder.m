@@ -45,6 +45,33 @@ static const double kMaxRecordFps = 60.0;
 // 再作为一个段入队，段处理降到 ~50 次/秒
 static const double kAudioCoalesceSeconds = 0.02;
 
+// ===== 共享 GPU 转换器（跨录制场次复用）=====
+// 首次创建要加载 metallib + 编译 kernel PSO（数百 ms），且发生在 feeder 线程上
+// 会与渲染线程争抢 GPU——这就是"第一次录制画面卡一会"的主因之一。
+// 改为进程级共享：由 warmUp 提前创建，各录制实例只 retain 使用。
+static FSMetalPixelConverter *g_sharedConverter = nil;
+static id<MTLDevice> g_sharedGPUDevice = nil;
+static id<MTLCommandQueue> g_sharedGPUQueue = nil;
+static dispatch_once_t g_sharedConverterOnce;
+
+static void fsRecInitSharedConverter(void)
+{
+    g_sharedGPUDevice = MTLCreateSystemDefaultDevice();
+    g_sharedGPUQueue = [g_sharedGPUDevice newCommandQueue];
+    if (g_sharedGPUDevice && g_sharedGPUQueue) {
+        g_sharedConverter = [[FSMetalPixelConverter alloc] initWithDevice:g_sharedGPUDevice
+                                                            commandQueue:g_sharedGPUQueue];
+    }
+}
+
+static FSMetalPixelConverter *fsRecSharedConverter(void)
+{
+    dispatch_once(&g_sharedConverterOnce, ^{
+        fsRecInitSharedConverter();
+    });
+    return g_sharedConverter;
+}
+
 // 把 OSType 四字符码转成可读字符串：'420f' 打印为 "420f"，
 // 而非 (char*)&t 的小端内存序 "f024"
 static const char *dbgFourCC(OSType t, char buf[5])
@@ -207,15 +234,224 @@ typedef struct {
     BOOL _convFailLogged;   // 像素格式转换失败
     BOOL _audioRebaseLogged; // 音频 pts 回退
 
-    // GPU 像素格式转换（BGRA↔NV12）：feeder 线程专用（无锁，单队列约束）
+    // GPU 像素格式转换（BGRA↔NV12）：feeder 线程专用（无锁，单队列约束）。
+    // 转换器本体进程级共享（fsRecSharedConverter），这里只是本地引用
     FSMetalPixelConverter *_gpuConverter;
-    id<MTLDevice> _gpuDevice;
-    id<MTLCommandQueue> _gpuQueue;
 }
 
 @end
 
 @implementation FSRenderRecorder
+
++ (void)warmUpResourcesWithPixelBuffer:(CVPixelBufferRef)pixelBuffer
+                                   fps:(float)fps
+                       audioSampleRate:(int)audioSampleRate
+                         audioChannels:(int)audioChannels
+{
+    // block 内可能替换为默认尺寸的顶替 buffer，需 __block
+    __block CVPixelBufferRef warmupBuffer = pixelBuffer;
+    __block float warmupFps = fps;
+    // 调用线程同步 retain：本方法立即返回，buffer 的所有权交给异步 block，
+    // 由 block 末尾负责释放——调用方在方法返回后即可释放自己持有的引用
+    if (warmupBuffer) {
+        CVPixelBufferRetain(warmupBuffer);
+    }
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        // 入参防御：宽高无效的 buffer 无法用于预热（AVAssetWriter 要求正数
+        // 宽高，否则崩），换一个默认 1280x720 NV12 buffer 顶替
+        CVPixelBufferRef fallbackBuffer = NULL;
+        if (warmupBuffer && (CVPixelBufferGetWidth(warmupBuffer) == 0 ||
+                             CVPixelBufferGetHeight(warmupBuffer) == 0)) {
+            warmupBuffer = NULL;
+        }
+        if (!warmupBuffer) {
+            NSDictionary *attrs = @{
+                (__bridge NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+                (__bridge NSString *)kCVPixelBufferWidthKey: @(1280),
+                (__bridge NSString *)kCVPixelBufferHeightKey: @(720),
+            };
+            CVPixelBufferCreate(kCFAllocatorDefault, 1280, 720,
+                                kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                                (__bridge CFDictionaryRef)attrs, &fallbackBuffer);
+            warmupBuffer = fallbackBuffer;
+            if (warmupFps <= 0.1f || warmupFps >= 241.0f) {
+                warmupFps = 30.0f;
+            }
+        }
+
+        // 1. Metal 转换器：metallib 加载 + kernel PSO 编译（数百 ms）
+        FSMetalPixelConverter *converter = fsRecSharedConverter();
+        if (converter && warmupBuffer) {
+            // 双向各空转一次：触发两条 GPU 路径的首次执行开销
+            // （纹理缓存创建、command buffer 提交路径等）
+            int w = (int)CVPixelBufferGetWidth(warmupBuffer);
+            int h = (int)CVPixelBufferGetHeight(warmupBuffer);
+            OSType fmt = CVPixelBufferGetPixelFormatType(warmupBuffer);
+            NSDictionary *bgraAttrs = @{
+                (__bridge NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+                (__bridge NSString *)kCVPixelBufferWidthKey: @(w),
+                (__bridge NSString *)kCVPixelBufferHeightKey: @(h),
+            };
+            NSDictionary *nv12Attrs = @{
+                (__bridge NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+                (__bridge NSString *)kCVPixelBufferWidthKey: @(w),
+                (__bridge NSString *)kCVPixelBufferHeightKey: @(h),
+            };
+            CVPixelBufferRef bgra = NULL, nv12 = NULL;
+            CVPixelBufferCreate(kCFAllocatorDefault, w, h, kCVPixelFormatType_32BGRA, (__bridge CFDictionaryRef)bgraAttrs, &bgra);
+            CVPixelBufferCreate(kCFAllocatorDefault, w, h, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, (__bridge CFDictionaryRef)nv12Attrs, &nv12);
+            if (bgra && nv12) {
+                if (fmt == kCVPixelFormatType_32BGRA) {
+                    [converter convert:bgra to:nv12];
+                    [converter convert:nv12 to:bgra];
+                } else {
+                    [converter convert:nv12 to:bgra];
+                    [converter convert:bgra to:nv12];
+                }
+            }
+            if (bgra) CVPixelBufferRelease(bgra);
+            if (nv12) CVPixelBufferRelease(nv12);
+        }
+
+        // 2. VideoToolbox 硬编会话：首次创建会初始化视频硬件编码器，与解码器
+        // 争抢导致播放卡顿。用临时文件完整走一遍最小编码流程预热（系统会缓存
+        // 编码会话，真实录制时 startWriting 从 ~1s 降到几十 ms 且不再抢硬件）。
+        // 音频 AAC 编码器同样顺带预热。
+        if (warmupBuffer) {
+            NSString *tmpDir = NSTemporaryDirectory();
+            NSString *path = [tmpDir stringByAppendingPathComponent:
+                              [[NSUUID UUID] UUIDString]];
+            path = [path stringByAppendingPathExtension:@"warmup.mp4"];
+            AVAssetWriter *writer = [[AVAssetWriter alloc] initWithURL:[NSURL fileURLWithPath:path]
+                                                              fileType:AVFileTypeMPEG4
+                                                                 error:nil];
+            if (writer) {
+                int w = (int)CVPixelBufferGetWidth(warmupBuffer);
+                int h = (int)CVPixelBufferGetHeight(warmupBuffer);
+                OSType fmt = CVPixelBufferGetPixelFormatType(warmupBuffer);
+                float fpsValue = (warmupFps > 0.1f && warmupFps < 241.0f) ? warmupFps : 30.0f;
+                NSDictionary *videoSettings = @{
+                    AVVideoCodecKey: AVVideoCodecTypeH264,
+                    AVVideoWidthKey: @(w),
+                    AVVideoHeightKey: @(h),
+                    AVVideoCompressionPropertiesKey: @{
+                        AVVideoAverageBitRateKey: @( (int)(MAX(w, 1) * MAX(h, 1) * fpsValue * 0.12) ),
+                        AVVideoExpectedSourceFrameRateKey: @( (int)fpsValue ),
+                        AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+                    },
+                };
+                AVAssetWriterInput *videoInput = [[AVAssetWriterInput alloc] initWithMediaType:AVMediaTypeVideo
+                                                                                outputSettings:videoSettings];
+                videoInput.expectsMediaDataInRealTime = YES;
+                AVAssetWriterInputPixelBufferAdaptor *adaptor =
+                    [AVAssetWriterInputPixelBufferAdaptor assetWriterInputPixelBufferAdaptorWithAssetWriterInput:videoInput
+                                                                                        sourcePixelBufferAttributes:@{
+                            (__bridge NSString *)kCVPixelBufferPixelFormatTypeKey: @(fmt),
+                            (__bridge NSString *)kCVPixelBufferWidthKey: @(w),
+                            (__bridge NSString *)kCVPixelBufferHeightKey: @(h),
+                        }];
+                [writer addInput:videoInput];
+                if (audioSampleRate > 0 && audioChannels > 0) {
+                    int audioBitRate = (int)MIN(128000, audioSampleRate * 3.0 * audioChannels * 0.9);
+                    AVAssetWriterInput *audioInput = [[AVAssetWriterInput alloc] initWithMediaType:AVMediaTypeAudio
+                                                                                    outputSettings:@{
+                        AVFormatIDKey: @(kAudioFormatMPEG4AAC),
+                        AVSampleRateKey: @(audioSampleRate),
+                        AVNumberOfChannelsKey: @(audioChannels),
+                        AVEncoderBitRateKey: @(audioBitRate),
+                    }];
+                    audioInput.expectsMediaDataInRealTime = YES;
+                    if ([writer canAddInput:audioInput]) {
+                        [writer addInput:audioInput];
+                    }
+                }
+                if ([writer startWriting]) {
+                    [writer startSessionAtSourceTime:CMTimeMakeWithSeconds(0, 600)];
+                    // 塞几帧真实像素让编码器真正出片（VTCompressionSession 在
+                    // 首帧编码时才完成最终初始化）
+                    CVPixelBufferRef buf = NULL;
+                    CVReturn ret = CVPixelBufferCreate(kCFAllocatorDefault, w, h, fmt, NULL, &buf);
+                    if (ret == kCVReturnSuccess && buf) {
+                        CVPixelBufferLockBaseAddress(buf, 0);
+                        memset(CVPixelBufferGetBaseAddress(buf), 0,
+                               CVPixelBufferGetDataSize(buf));
+                        CVPixelBufferUnlockBaseAddress(buf, 0);
+                        for (int i = 0; i < 3; i++) {
+                            if (videoInput.isReadyForMoreMediaData) {
+                                [adaptor appendPixelBuffer:buf
+                                       withPresentationTime:CMTimeMake(i, 30)];
+                            }
+                        }
+                        CVPixelBufferRelease(buf);
+                    }
+                    // 音频预热：AAC 编码器首次 append 触发内部初始化
+                    if (audioSampleRate > 0 && audioChannels > 0) {
+                        AVAssetWriterInput *audioInput = nil;
+                        for (AVAssetWriterInput *input in writer.inputs) {
+                            if (input.mediaType == AVMediaTypeAudio) {
+                                audioInput = input;
+                                break;
+                            }
+                        }
+                        if (audioInput) {
+                            int bytesPerSample = 2 * audioChannels;
+                            int nbFrames = audioSampleRate / 10; // 100ms 静音
+                            int bytes = nbFrames * bytesPerSample;
+                            uint8_t *pcm = calloc(1, bytes);
+                            if (pcm) {
+                                CMBlockBufferRef bb = NULL;
+                                if (CMBlockBufferCreateWithMemoryBlock(kCFAllocatorDefault, pcm, bytes, kCFAllocatorNull, NULL, 0, bytes, 0, &bb) == kCMBlockBufferNoErr && bb) {
+                                    CMAudioFormatDescriptionRef format = NULL;
+                                    AudioStreamBasicDescription asbd = {0};
+                                    asbd.mSampleRate = audioSampleRate;
+                                    asbd.mFormatID = kAudioFormatLinearPCM;
+                                    asbd.mFormatFlags = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked;
+                                    asbd.mBytesPerPacket = bytesPerSample;
+                                    asbd.mFramesPerPacket = 1;
+                                    asbd.mBytesPerFrame = bytesPerSample;
+                                    asbd.mChannelsPerFrame = audioChannels;
+                                    asbd.mBitsPerChannel = 16;
+                                    CMAudioFormatDescriptionCreate(kCFAllocatorDefault, &asbd, 0, NULL, 0, NULL, NULL, &format);
+                                    if (format) {
+                                        CMSampleTimingInfo timing = {
+                                            CMTimeMake(nbFrames, audioSampleRate),
+                                            CMTimeMake(0, audioSampleRate),
+                                            kCMTimeInvalid
+                                        };
+                                        size_t sampleSizeEntry = (size_t)bytesPerSample;
+                                        CMSampleBufferRef sb = NULL;
+                                        if (CMSampleBufferCreate(kCFAllocatorDefault, bb, TRUE, NULL, NULL, format, nbFrames, 1, &timing, 1, &sampleSizeEntry, &sb) == noErr && sb) {
+                                            [audioInput appendSampleBuffer:sb];
+                                            CFRelease(sb);
+                                        }
+                                        CFRelease(format);
+                                    }
+                                    CFRelease(bb);
+                                }
+                                free(pcm);
+                            }
+                        }
+                    }
+                    [videoInput markAsFinished];
+                    [writer finishWritingWithCompletionHandler:^{}];
+                    // finishWriting 是异步的；等它结束再释放 writer，确保编码
+                    // 会话完整走完（预热才生效）
+                    while (writer.status == AVAssetWriterStatusWriting) {
+                        [NSThread sleepForTimeInterval:0.01];
+                    }
+                }
+                ALOGI("[RenderRecord] warmup done, writer status=%ld", (long)writer.status);
+            }
+        }
+        if (fallbackBuffer) {
+            CVPixelBufferRelease(fallbackBuffer);
+        }
+        // 释放入口处同步加的 retain（buffer 生命周期到本 block 结束为止）
+        if (warmupBuffer) {
+            CVPixelBufferRelease(warmupBuffer);
+        }
+    });
+}
 
 - (instancetype)init
 {
@@ -862,16 +1098,10 @@ typedef struct {
     OSType dstFmtReal = CVPixelBufferGetPixelFormatType(dst);
 
     // GPU 快速路径：BGRA↔NV12 走 Metal compute（<1ms，CPU 标量版 6-12ms）。
-    // 首次惰性创建（feeder 线程专用，单队列无锁）；创建或转换失败回落 CPU 路径
+    // 转换器是进程级共享的（warmUp 提前创建，跨录制场次复用），首次调用若
+    // 尚未预热则在此同步创建（一次性开销）；创建或转换失败回落 CPU 路径
     if (!_gpuConverter) {
-        if (!_gpuDevice) {
-            _gpuDevice = MTLCreateSystemDefaultDevice();
-            _gpuQueue = [_gpuDevice newCommandQueue];
-        }
-        if (_gpuDevice && _gpuQueue) {
-            _gpuConverter = [[FSMetalPixelConverter alloc] initWithDevice:_gpuDevice
-                                                            commandQueue:_gpuQueue];
-        }
+        _gpuConverter = fsRecSharedConverter();
     }
     if (_gpuConverter && [_gpuConverter convert:src to:dst]) {
         return dst;
@@ -1267,8 +1497,6 @@ done:
         _bufferPool = NULL;
     }
     _gpuConverter = nil;
-    _gpuDevice = nil;
-    _gpuQueue = nil;
     _starting = NO;
     _stopping = NO;
     _writerError = nil;
