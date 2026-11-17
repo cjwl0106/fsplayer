@@ -10,7 +10,7 @@ user-invocable: true
 
 ## 产出
 
-- `examples/xcframewrok/FSPlayer.xcframework` — 包含 iOS 真机 arm64 和 iOS 模拟器 arm64
+- `build/xcframework/ios/FSPlayer.xcframework` — 包含 iOS 真机 arm64 和 iOS 模拟器 arm64
 
 ## 典型使用场景
 
@@ -54,17 +54,16 @@ user-invocable: true
 
 ### 生成 xcframework
 
-`./build-lgpl.sh framework` 内部调用 `./make-xcframework.sh`，该脚本已更新为不包含 dSYM（避免在其他项目中出现 "Missing path from XCFramework as defined by DebugSymbolsPath" 错误），可以直接使用。
+`./build-lgpl.sh framework` 内部调用 `.github/scripts/xcframewrok/build-ios-framework.sh` 和 `.github/scripts/xcframewrok/make-xcframework.sh`，xcframework 不包含 dSYM（避免在其他项目中出现 "Missing path from XCFramework as defined by DebugSymbolsPath" 错误），可以直接使用。
 
 也可以手动执行等效命令：
 
 ```bash
-cd examples/xcframewrok
-rm -rf FSPlayer.xcframework
+rm -rf build/xcframework/ios/FSPlayer.xcframework
 xcodebuild -create-xcframework \
-    -framework ../ios/Release-iphoneos/FSPlayer.framework \
-    -framework ../ios/Release-iphonesimulator/FSPlayer.framework \
-    -output FSPlayer.xcframework
+    -framework examples/ios/Release-iphoneos/FSPlayer.framework \
+    -framework examples/ios/Release-iphonesimulator/FSPlayer.framework \
+    -output build/xcframework/ios/FSPlayer.xcframework
 ```
 
 ### 最终验证
@@ -73,7 +72,7 @@ xcodebuild -create-xcframework \
 
 ```bash
 # 检查 xcframework 产物
-ls examples/xcframewrok/FSPlayer.xcframework/
+ls build/xcframework/ios/FSPlayer.xcframework/
 
 # 检查架构
 lipo -info examples/ios/Release-iphoneos/FSPlayer.framework/FSPlayer      # arm64

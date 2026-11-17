@@ -271,8 +271,7 @@ cd /Users/hik/Documents/workspace/github/fsplayer
 ## Step 7: 构建 iOS Framework
 
 ```bash
-cd examples/ios
-./build-framework.sh
+./.github/scripts/xcframewrok/build-ios-framework.sh
 ```
 
 产物：
@@ -286,14 +285,15 @@ cd examples/ios
 将真机和模拟器 Framework 合并为单一 xcframework：
 
 ```bash
-cd examples/xcframewrok
-./make-xcframework.sh
+./.github/scripts/xcframewrok/make-xcframework.sh ios
 ```
 
-产物：`xcframewrok/FSPlayer.xcframework`，包含 iOS 真机 arm64 和 iOS 模拟器 arm64。
+产物：`build/xcframework/ios/FSPlayer.xcframework`，包含 iOS 真机 arm64 和 iOS 模拟器 arm64。
 
-> 💡 `make-xcframework.sh` 默认会尝试合并所有平台。如果 macOS/tvOS 的 Framework 不存在，
-> 脚本会自动跳过这些平台，只合并 iOS 的真机和模拟器。
+> 💡 不带参数运行 `make-xcframework.sh` 会尝试合并所有平台（并额外输出 iOS/macOS/tvOS 单平台包）。
+> 如果 macOS/tvOS 的 Framework 不存在，脚本会自动跳过这些平台，只合并 iOS 的真机和模拟器。
+> xcframework 不包含 dSYM（避免下游项目报 "Missing path from XCFramework as defined by DebugSymbolsPath" 错误），
+> 调试符号请在项目中单独配置 dSYM 搜索路径。
 
 ---
 
@@ -346,7 +346,7 @@ nm build/product/ios/universal/ffmpeg/lib/libavcodec.a | grep "ff_libx264\|ff_li
 
 | 产物 | 路径 | 架构 |
 |------|------|------|
-| iOS xcframework | `examples/xcframewrok/FSPlayer.xcframework` | 真机 arm64 + 模拟器 arm64 |
+| iOS xcframework | `build/xcframework/ios/FSPlayer.xcframework` | 真机 arm64 + 模拟器 arm64 |
 
 xcframework 内部结构：
 ```

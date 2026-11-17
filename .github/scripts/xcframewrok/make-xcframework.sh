@@ -35,9 +35,9 @@ create_one_xcframework() {
         framework="$dir/$FRAMEWORK"
         if [[ -d "$framework" ]]; then
             inputs+=(-framework "$framework")
-            if [[ -d "$framework.dSYM" ]]; then
-                inputs+=(-debug-symbols "$framework.dSYM")
-            fi
+            # dSYM 不包含在 xcframework 中，避免在其他项目中出现
+            # "Missing path from XCFramework as defined by DebugSymbolsPath" 错误。
+            # 如果需要调试符号，请在项目中单独配置 dSYM 搜索路径。
         fi
     done
     if (( ${#inputs[@]} > 0 )); then

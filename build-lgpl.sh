@@ -249,17 +249,15 @@ function do_framework() {
 
     # Step 7: 构建 iOS Framework（真机 + 模拟器）
     echo "=== 构建 iOS Framework ==="
-    cd examples/ios
-    ./build-framework.sh
+    ./.github/scripts/xcframewrok/build-ios-framework.sh
 
     # Step 8: 生成 xcframework（真机 + 模拟器合并）
     echo "=== 生成 xcframework ==="
-    cd ../xcframewrok
-    ./make-xcframework.sh
+    ./.github/scripts/xcframewrok/make-xcframework.sh ios
 
     echo ""
     echo "✅ Step 6-9 完成：xcframework 已生成"
-    echo "   产物位置: examples/xcframewrok/FSPlayer.xcframework"
+    echo "   产物位置: build/xcframework/ios/FSPlayer.xcframework"
 }
 
 # ============================================================
@@ -478,7 +476,7 @@ case "${1:-}" in
         do_framework
         do_verify
         echo ""
-        echo "🎉 全部完成！xcframework 位于 examples/xcframewrok/FSPlayer.xcframework"
+        echo "🎉 全部完成！xcframework 位于 build/xcframework/ios/FSPlayer.xcframework"
         ;;
     init)
         do_init
