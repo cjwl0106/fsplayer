@@ -9,6 +9,7 @@ targets:
     preBuildScripts:
       - script: cd ${MY_PROJECT_DIR}/ijkmedia/ijkplayer;sh version.sh ./ ijkversion.h
         name: ijkversion.h
+        basedOnDependencyAnalysis: false
     sources:
       - path: ijkmedia
         headerVisibility: project
@@ -20,9 +21,8 @@ targets:
           - "ijkplayer/android/**/*.*"
           - "ijksdl/android/**/*.*"
           - "ijkj4a/**/*.*"
-          # 安卓专用：swscale 版 ijk_image_convert（苹果沿用 abi_all/image_convert.c）
-          - "ijksdl/ffmpeg/ijksdl_image_convert_sws.c"
           - "ijksdl/ios/*.*"
+          - "wrapper/android"
           - "wrapper/apple/*.*"
           - "ijkplayer/ff_subtitle_preference.h"
           - "ijksoundtouch/**/*.*"
@@ -32,7 +32,7 @@ targets:
         headerVisibility: public
     settings:
       PRODUCT_NAME: FSPlayer
-      MARKETING_VERSION: 1.1.2
+      MARKETING_VERSION: 1.1.3
       DEFINES_MODULE: YES
       CLANG_WARN_DOCUMENTATION_COMMENTS: NO
       MODULEMAP_FILE: "${MY_PROJECT_DIR}/module.modulemap"
@@ -116,6 +116,7 @@ targets:
     preBuildScripts: 
       - script: cd ${MY_PROJECT_DIR}/ijkmedia/ijkplayer;sh version.sh ./ ijkversion.h
         name: ijkversion.h
+        basedOnDependencyAnalysis: false
     sources:
       - path: ijkmedia
         headerVisibility: project
@@ -127,9 +128,8 @@ targets:
           - "ijkplayer/android/**/*.*"
           - "ijksdl/android/**/*.*"
           - "ijkj4a/**/*.*"
-          # 安卓专用：swscale 版 ijk_image_convert（苹果沿用 abi_all/image_convert.c）
-          - "ijksdl/ffmpeg/ijksdl_image_convert_sws.c"
           - "ijksdl/mac/*.*"
+          - "wrapper/android"
           - "wrapper/apple/*.*"
           - "ijkplayer/ff_subtitle_preference.h"
           - "ijksoundtouch/**/*.*"
@@ -139,7 +139,7 @@ targets:
         headerVisibility: public
     settings:
       PRODUCT_NAME: FSPlayer
-      MARKETING_VERSION: 1.1.2
+      MARKETING_VERSION: 1.1.3
       DEFINES_MODULE: YES
       CLANG_WARN_DOCUMENTATION_COMMENTS: NO
       MODULEMAP_FILE: "${MY_PROJECT_DIR}/module.modulemap"
@@ -219,6 +219,7 @@ targets:
     preBuildScripts: 
       - script: cd ${MY_PROJECT_DIR}/ijkmedia/ijkplayer;sh version.sh ./ ijkversion.h
         name: ijkversion.h
+        basedOnDependencyAnalysis: false
     sources:
       - path: ijkmedia
         headerVisibility: project
@@ -231,9 +232,8 @@ targets:
           - "ijksdl/ijksdl_container.*"
           - "ijksdl/android/**/*.*"
           - "ijkj4a/**/*.*"
-          # 安卓专用：swscale 版 ijk_image_convert（苹果沿用 abi_all/image_convert.c）
-          - "ijksdl/ffmpeg/ijksdl_image_convert_sws.c"
           - "ijksdl/mac/*.*"
+          - "wrapper/android"
           - "wrapper/apple/*.*"
           - "ijkplayer/ff_subtitle_preference.h"
           - "ijksoundtouch/**/*.*"
@@ -243,7 +243,7 @@ targets:
         headerVisibility: public
     settings:
       PRODUCT_NAME: FSPlayer
-      MARKETING_VERSION: 1.1.2
+      MARKETING_VERSION: 1.1.3
       DEFINES_MODULE: YES
       CLANG_WARN_DOCUMENTATION_COMMENTS: NO
       MODULEMAP_FILE: "${MY_PROJECT_DIR}/module.modulemap"

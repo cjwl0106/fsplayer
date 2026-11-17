@@ -1,5 +1,15 @@
+## tag 1.1.3
+
+- add Picture in Picture (PiP) support on iOS, macOS and Android #96
+- add an OpenGL ES 3 fallback when Vulkan rendering cannot initialize or not support ahb on Android #101
+- statically link libSMB2 on Android #101
+- use libyuv for pixel format conversion on Android
+- support Android 5.0（API 21）
+- use openssl LTS version 3.5.9
+
 ## tag 1.1.2
 
+- support Android 7.0（API 24）
 - fix HEVC hardware decoding on android by enabling all mediacodec decoders instead of only h264
 - rm deprecated rotatePreference property
 - add FSVideoOutputProtocol new protocol
@@ -7,6 +17,8 @@
 - improve VideoToolbox foreground recovery on iOS and tvOS by replaying cached keyframe packets and filtering previously decoded frames, fix #68
 - support transparent video and transparent background color, fix #56
 - auto enable av1 videotoolbox hwaccel
+- under the LGPL-2.1-or-later License #98
+- upgrade openssl to 3.6.4 #95 
 
 ## tag 1.1.1
 

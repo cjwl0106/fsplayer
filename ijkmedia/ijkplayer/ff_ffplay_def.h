@@ -51,7 +51,6 @@
 #include "libavcodec/bsf.h"
 #include "libswscale/swscale.h"
 #include "libavutil/opt.h"
-//#include "libavcodec/avfft.h"
 #include "libswresample/swresample.h"
 
 #if CONFIG_AUDIO_AVFILTER || CONFIG_VIDEO_AVFILTER
@@ -623,7 +622,7 @@ typedef struct FFPlayer {
 
     /* filters */
 #if CONFIG_VIDEO_AVFILTER
-    char *vfilters;
+    const char *vfilters;
     char *vfilter0;
     SDL_mutex  *vf_mutex;
     int         vf_changed;
@@ -665,6 +664,7 @@ typedef struct FFPlayer {
     FSSubtitlePreference sp;
 
     int video_scaling_mode;   // 画面缩放模式，见 FFP_PROP_INT64_VIDEO_SCALING_MODE
+    int video_renderer;       // Android option: 0 auto, 1 OpenGL ES3, 2 Vulkan
 
     /* 画面手动三轴旋转（度），见 FFP_PROP_FLOAT_VIDEO_*_ROTATE_DEGREES；
        语义对齐 iOS 的 xRotateDegrees/yRotateDegrees/zRotateDegrees */
@@ -792,6 +792,7 @@ inline static void ffp_reset_internal(FFPlayer *ffp)
      */
     ffp->sp = fs_subtitle_default_preference();
 
+    ffp->video_renderer                 = 0; // option: auto, retain initialized vout across reset
     ffp->video_scaling_mode             = 0; // option: 等比完整显示
     ffp->x_rotate_degrees               = 0.0f;
     ffp->y_rotate_degrees               = 0.0f;
@@ -883,6 +884,7 @@ int decoder_extradata_annexb(AVCodecContext *avctx, AVStream *st);
 void decoder_destroy(Decoder *d);
 void decoder_abort(Decoder *d, FrameQueue *fq);
 
+void show_dict_pretty(void *avcl, const char *tag, AVDictionary *dict);
 #if FFP_APPLE_MOBILE_HWDEC_RECOVERY
 /* 关键帧封包缓存（issue #68）：硬解会话失效后从最近的关键帧重放 */
 void decoder_kpkt_cache_reset(Decoder *d);

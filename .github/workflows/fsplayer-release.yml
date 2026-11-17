@@ -59,7 +59,7 @@ jobs:
         link-to-sdk: true
         local-cache: false
 
-    - name: Install Android platform / build-tools
+    - name: Install Android platform, build-tools and CMake
       run: |
         SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
         test -d "$SDK" || { echo "::error::no Android SDK at $SDK"; exit 1; }
@@ -67,7 +67,7 @@ jobs:
         export PATH="$SDK/cmdline-tools/latest/bin:$PATH"
         sdkmanager --version
         yes | sdkmanager --licenses > /dev/null || true
-        sdkmanager "platforms;android-35" "build-tools;35.0.0"
+        sdkmanager "platforms;android-35" "build-tools;35.0.0" "cmake;3.22.1"
         sdkmanager --list_installed | head -20 || true
 
     - name: Install xcodegen
@@ -82,7 +82,7 @@ jobs:
     - name: Download Pre Compiled Dependencies
       run: |
         set -euo pipefail
-        PLATFORMS=(ios macos tvos android)
+        PLATFORMS=(ios macos tvos)
         echo "platforms: ${PLATFORMS[*]}"
 
         for p in "${PLATFORMS[@]}"; do
@@ -90,21 +90,24 @@ jobs:
           ./FFToolChain/main.sh install -p "$p" -l 'ass ffmpeg'
           echo "::endgroup::"
         done
-        
+
+        # Android 构建显式安装 libyuv，供 FSPlayer 原生链接。
+        ./FFToolChain/main.sh install -p android -l 'ass yuv ffmpeg'
+
     - name: Build Apple Frameworks
       run: |
         set -euo pipefail
-        ./examples/ios/build-framework.sh
-        ./examples/macos/build-framework.sh
-        ./examples/tvos/build-framework.sh
-        ./examples/xcframewrok/make-xcframework.sh
+        ./.github/scripts/xcframewrok/build-ios-framework.sh
+        ./.github/scripts/xcframewrok/build-macos-framework.sh
+        ./.github/scripts/xcframewrok/build-tvos-framework.sh
+        ./.github/scripts/xcframewrok/make-xcframework.sh
 
     # 四个 ZIP 与 AAR 共用同一份许可证和分发说明。
     # Android Java resources 会进入 AAR 内 classes.jar 的 META-INF/fsplayer/。
     - name: Prepare Distribution Documents
       run: |
         set -euo pipefail
-        docs="android/fsplayer/src/main/resources/META-INF/fsplayer"
+        docs="ijkmedia/wrapper/android/fsplayer/src/main/resources/META-INF/fsplayer"
         mkdir -p "$docs"
         cp COPYING.LGPLv2.1 "$docs/LICENSE"
         cp NOTICE README.md CHANGELOG.md "$docs/"
@@ -127,17 +130,16 @@ jobs:
         }
 
         mkdir -p dist
-        package_dist "FSPlayer" "examples/xcframewrok/FSPlayer.xcframework"
-        package_dist "FSPlayer-iOS" "examples/xcframewrok/ios/FSPlayer.xcframework"
-        package_dist "FSPlayer-macOS" "examples/xcframewrok/macos/FSPlayer.xcframework"
-        package_dist "FSPlayer-tvOS" "examples/xcframewrok/tvos/FSPlayer.xcframework"
+        package_dist "FSPlayer" "build/xcframework/FSPlayer.xcframework"
+        package_dist "FSPlayer-iOS" "build/xcframework/ios/FSPlayer.xcframework"
+        package_dist "FSPlayer-macOS" "build/xcframework/macos/FSPlayer.xcframework"
+        package_dist "FSPlayer-tvOS" "build/xcframework/tvos/FSPlayer.xcframework"
         ls -l dist
 
     - name: Build AAR
+      working-directory: ijkmedia/wrapper/android
       run: |
         set -euo pipefail
-        chmod +x android/gradlew
-        cd android
         ./gradlew :fsplayer:assembleRelease \
           -PabiFilters="arm64-v8a,armeabi-v7a" \
           --no-daemon --stacktrace
@@ -147,7 +149,7 @@ jobs:
       run: |
         set -euo pipefail
         mkdir -p dist
-        cp android/fsplayer/build/outputs/aar/fsplayer-release.aar dist/fsplayer-release.aar
+        cp ijkmedia/wrapper/android/fsplayer/build/outputs/aar/fsplayer-release.aar dist/fsplayer-release.aar
         ls -l dist
 
     - name: Verify Distribution Documents
@@ -198,7 +200,7 @@ jobs:
         set -euo pipefail
         set -a; source release-constants.env; set +a
         echo "version: $VERSION"
-        ./examples/xcframewrok/make-podspec.sh "$VERSION"
+        ./.github/scripts/xcframewrok/make-podspec.sh "$VERSION"
         mv dist/fsplayer-release.aar "dist/fsplayer-${VERSION}.aar"
 
     # 发布前最后一步才生成说明。放这么靠后是因为 third-party 要读
@@ -321,8 +323,8 @@ jobs:
     #       fi
     #     done
     #     set -a; source release-constants.env; set +a
-    #     chmod +x android/gradlew
-    #     cd android
+    #     chmod +x ijkmedia/wrapper/android/gradlew
+    #     cd ijkmedia/wrapper/android
     #     ./gradlew :fsplayer:publishAndReleaseToMavenCentral \
     #       -PabiFilters="arm64-v8a,armeabi-v7a" \
     #       -PversionName="$VERSION" \

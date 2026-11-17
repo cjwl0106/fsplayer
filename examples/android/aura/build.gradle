@@ -1,0 +1,80 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    // R 的包名 = Java 源码包名 = namespace = com.debugly.aura，与 applicationId 一致。
+    namespace 'com.debugly.aura'
+    // compileSdk / targetSdk 不决定最低安装版本；最低版本为 API21。
+    compileSdk 36
+
+    defaultConfig {
+        // Aura 的正式包名。历史上用过 com.debugly.fsplayer.demo，改名后旧包
+        // 无法覆盖升级（会被当成另一个 app 并存），需要手动卸载。
+        applicationId "com.debugly.aura"
+        minSdk 21
+        targetSdk 35
+        // 本地构建使用默认版本，aura-apk workflow 根据 GitHub Release 传入版本。
+        versionCode((project.findProperty("versionCode") ?: 107).toInteger())
+        versionName(project.findProperty("versionName") ?: "0.1.7")
+    }
+
+    signingConfigs {
+        release {
+            // CI 用 secrets 解码出 keystore 并导出这三个环境变量；本地没有就退回 debug 签名
+            def ks = System.getenv("FS_KEYSTORE_FILE")
+            if (ks != null) {
+                storeFile file(ks)
+                storePassword System.getenv("FS_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("FS_KEY_ALIAS")
+                keyPassword System.getenv("FS_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            // 本地 debug 包和 CI 的 release 包 applicationId 相同但签名不同，
+            // 装到同一台手机上会互相覆盖/签名冲突。加 .debug 后缀让两者并存，
+            // 各自独立的 RecentMedia、设置和权限，不用卸载重装。
+            applicationIdSuffix ".debug"
+            // 装包脚本（aura-apk 等）只发布 release，这里只影响本地调试。
+            versionNameSuffix "-debug"
+            // 桌面上和 release 同名会分不清哪个是调试包（两个包 applicationId
+            // 不同，能并存）。resValue 覆盖 src/main 的 app_name，launcher 标签
+            // 随之变成 Aura-D；release 不受影响。
+            resValue "string", "app_name", "Aura-D"
+        }
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig System.getenv("FS_KEYSTORE_FILE") != null
+                    ? signingConfigs.release
+                    : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    lint {
+        abortOnError false
+    }
+}
+
+dependencies {
+    implementation project(':fsplayer')
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'androidx.preference:preference:1.2.1'
+    implementation 'com.squareup:otto:1.3.8'
+
+    // Media3 1.9+ requires API23. Pin the API21-compatible line for Aura;
+    // do not override library manifests to force unsupported newer versions.
+    def media3Version = "1.8.1"
+    implementation "androidx.media3:media3-exoplayer:$media3Version"
+    implementation "androidx.media3:media3-exoplayer-hls:$media3Version"
+    implementation "androidx.media3:media3-exoplayer-dash:$media3Version"
+}

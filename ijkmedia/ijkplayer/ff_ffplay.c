@@ -50,7 +50,6 @@
 #endif
 #include "libswscale/swscale.h"
 #include "libavutil/opt.h"
-//#include "libavcodec/avfft.h"
 #include "libswresample/swresample.h"
 #include "ff_version.h"
 #if CONFIG_AUDIO_AVFILTER || CONFIG_VIDEO_AVFILTER
@@ -130,10 +129,10 @@ int cmp_audio_fmts(enum AVSampleFormat fmt1, int64_t channel_count1,
 
 #endif
 
+/* for internal usage */
 static void free_picture(Frame *vp);
 static double consume_audio_buffer(FFPlayer *ffp, double diff);
 static void update_sample_display(FFPlayer *ffp, uint8_t *samples, int samples_size);
-
 #include "ff_heic_tile.h"
 
 static int packet_queue_get_or_buffering(FFPlayer *ffp, PacketQueue *q, AVPacket *pkt, int *serial, int *finished, int64_t *demux_ms)
@@ -198,6 +197,7 @@ static int packet_queue_get_or_buffering(FFPlayer *ffp, PacketQueue *q, AVPacket
      frame #12: 0x000000019ff61470 Foundation`__NSThread__start__ + 716
      frame #13: 0x00000001045d95d4 libsystem_pthread.dylib`_pthread_start + 148
  */
+#if defined(__ANDROID__)
 /*
  * 给一个 Annex-B 包补上 AUD（Access Unit Delimiter）。
  *
@@ -245,6 +245,7 @@ static int packet_prepend_aud(AVPacket *pkt)
     av_packet_free(&np);
     return 0;
 }
+#endif
 
 #if FFP_APPLE_MOBILE_HWDEC_RECOVERY
 /* Called only by the decoder thread, which owns the packet cache. */
@@ -556,10 +557,12 @@ static int decoder_decode_frame(FFPlayer *ffp, Decoder *d, AVFrame *frame, AVSub
                     av_packet_unref(d->pkt);
                     continue;
                 }
+                #if defined(__ANDROID__)
                 if (d->bsf_insert_aud && packet_prepend_aud(d->pkt) < 0) {
                     av_packet_unref(d->pkt);
                     continue;
                 }
+                #endif
             }
             int send = avcodec_send_packet(d->avctx, d->pkt);
             if (send == AVERROR(EAGAIN)) {
@@ -573,12 +576,17 @@ static int decoder_decode_frame(FFPlayer *ffp, Decoder *d, AVFrame *frame, AVSub
                     av_strerror(send, errbuf, sizeof(errbuf));
                     av_log(d->avctx, AV_LOG_ERROR, "avcodec_send_packet failed:%s(%d).\n",errbuf,send);
                 }
-                if (send == AVERROR_INVALIDDATA
+                
+                if (send == AVERROR(ENOSYS)) {
+                    //Function not implemented: av1 hw accelerate decoder not implemented before M3 PRO
+                    if (d->avctx->hw_device_ctx) {
+                        ffp_notify_msg2(ffp, FFP_MSG_VIDEO_DECODER_FATAL, send);
+                    }
+                } else if (send == AVERROR_INVALIDDATA
                     || send == AVERROR_UNKNOWN
                     || send == AVERROR_EXTERNAL
-                    || send == AVERROR(ENOSYS)
                     || send == AVERROR(EINVAL)) {
-                    //Samsung Wonderland Two HDR UHD 4K HDR10.ts decode first frame return AVERROR_INVALIDDATA 
+                    //Samsung Wonderland Two HDR UHD 4K HDR10.ts decode first frame return AVERROR_INVALIDDATA
                     //hw accel decode failed greater than twice.
 #if FFP_APPLE_MOBILE_HWDEC_RECOVERY
                     if (d->avctx->hw_device_ctx) {
@@ -2148,115 +2156,6 @@ fail:
 
 #if CONFIG_VIDEO_AVFILTER
 
-static int configure_video_filters(FFPlayer *ffp, AVFilterGraph *graph, VideoState *is, const char *vfilters, AVFrame *frame)
-{
-    char sws_flags_str[512] = "";
-    char buffersrc_args[256] = "";
-    char vfilters_buf[1024] = "";
-    int ret;
-    AVFilterContext *filt_src = NULL, *filt_out = NULL, *last_filter = NULL;
-    AVCodecParameters *codecpar = is->video_st->codecpar;
-    AVRational fr = av_guess_frame_rate(is->ic, is->video_st, NULL);
-    AVBufferSrcParameters *par = av_buffersrc_parameters_alloc();
-    if (!par)
-        return AVERROR(ENOMEM);
-
-    if (vfilters)
-        av_strlcpy(vfilters_buf, vfilters, sizeof(vfilters_buf));
-
-    if (ffp->deinterlace > 0) {
-        if (vfilters_buf[0])
-            av_strlcatf(vfilters_buf, sizeof(vfilters_buf), ",");
-
-        switch (ffp->deinterlace) {
-            case 1:
-                // bwdif: SIMD-accelerated (NEON/AVX2), optimal performance and quality
-                av_strlcatf(vfilters_buf, sizeof(vfilters_buf), "bwdif=mode=0:parity=-1:deint=0");
-                break;
-            case 2:
-                // yadif: classic software spatial/temporal deinterlacing
-                av_strlcatf(vfilters_buf, sizeof(vfilters_buf), "yadif=mode=0:parity=-1:deint=0");
-                break;
-            case 3:
-                // field: simple field extraction with ultra-low CPU usage
-                av_strlcatf(vfilters_buf, sizeof(vfilters_buf), "field=type=top");
-                break;
-            default:
-                av_strlcatf(vfilters_buf, sizeof(vfilters_buf), "bwdif=mode=0:parity=-1:deint=0");
-                break;
-        }
-    }
-
-//    // [TEST FILTER] 增加黑白测试滤镜 (hue=s=0)，用于直观验证 AVFilter 是否生效
-//    if (vfilters_buf[0])
-//        av_strlcatf(vfilters_buf, sizeof(vfilters_buf), ",");
-//    av_strlcatf(vfilters_buf, sizeof(vfilters_buf), "hue=s=0");
-//
-//    av_log(ffp, AV_LOG_INFO, "configure_video_filters: vfilters_buf='%s', deinterlace=%d\n", vfilters_buf, ffp->deinterlace);
-    const AVDictionaryEntry *e = NULL;
-#if IS_FFMPEG_6
-    while ((e = av_dict_iterate(ffp->sws_dict, e)))
-#else
-    while ((e = av_dict_get(ffp->sws_dict, "", e, AV_DICT_IGNORE_SUFFIX)))
-#endif
-    {
-        if (!strcmp(e->key, "sws_flags")) {
-            av_strlcatf(sws_flags_str, sizeof(sws_flags_str), "%s=%s:", "flags", e->value);
-        } else
-            av_strlcatf(sws_flags_str, sizeof(sws_flags_str), "%s=%s:", e->key, e->value);
-    }
-    if (strlen(sws_flags_str))
-        sws_flags_str[strlen(sws_flags_str)-1] = '\0';
-
-    graph->scale_sws_opts = av_strdup(sws_flags_str);
-
-#if IS_FFMPEG_7
-    snprintf(buffersrc_args, sizeof(buffersrc_args),
-             "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d:"
-             "colorspace=%d:range=%d",
-             frame->width, frame->height, frame->format,
-             is->video_st->time_base.num, is->video_st->time_base.den,
-             codecpar->sample_aspect_ratio.num, FFMAX(codecpar->sample_aspect_ratio.den, 1),
-             frame->colorspace, frame->color_range);
-#else
-    snprintf(buffersrc_args, sizeof(buffersrc_args),
-             "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d",
-             frame->width, frame->height, frame->format,
-             is->video_st->time_base.num, is->video_st->time_base.den,
-             codecpar->sample_aspect_ratio.num, FFMAX(codecpar->sample_aspect_ratio.den, 1));
-#endif
-    if (fr.num && fr.den)
-        av_strlcatf(buffersrc_args, sizeof(buffersrc_args), ":frame_rate=%d/%d", fr.num, fr.den);
-
-    if ((ret = avfilter_graph_create_filter(&filt_src,
-                                            avfilter_get_by_name("buffer"),
-                                            "ffplay_buffer", buffersrc_args, NULL,
-                                            graph)) < 0)
-        goto fail;
-    //not sure set par is necessory
-    par->hw_frames_ctx = frame->hw_frames_ctx;
-    ret = av_buffersrc_parameters_set(filt_src, par);
-    if (ret < 0)
-        goto fail;
-    
-    if ((ret = avfilter_graph_create_filter(&filt_out,
-                                            avfilter_get_by_name("buffersink"),
-                                            "ffplay_buffersink", NULL, NULL,
-                                            graph)) < 0)
-        goto fail;
-
-    last_filter = filt_out;
-
-    if ((ret = configure_filtergraph(graph, vfilters_buf[0] ? vfilters_buf : NULL, filt_src, last_filter)) < 0)
-        goto fail;
-
-    is->in_video_filter  = filt_src;
-    is->out_video_filter = filt_out;
-
-fail:
-    return ret;
-}
-
 typedef struct FFVideoFilterContext {
     AVFilterGraph   *graph;
     AVFilterContext *filt_in;
@@ -2288,108 +2187,76 @@ static void ffp_video_filter_free(FFVideoFilterContext **pctx)
     av_freep(pctx);
 }
 
-typedef int (*ffp_video_filter_output_cb)(FFPlayer *ffp, AVFrame *frame, AVRational tb, AVRational frame_rate, void *opaque);
-
-static int ffp_video_filter_process(FFPlayer *ffp, FFVideoFilterContext **pctx, AVFrame *frame,
-                                    ffp_video_filter_output_cb output_cb, void *opaque)
+static int configure_video_filters(FFPlayer *ffp, AVFilterGraph *graph, VideoState *is, const char *vfilters, AVFrame *frame)
 {
-    VideoState *is = ffp->is;
-    int ret = 0;
+    char sws_flags_str[512] = "";
+    char buffersrc_args[256] = "";
+    int ret;
+    AVFilterContext *filt_src = NULL, *filt_out = NULL, *last_filter = NULL;
+    AVCodecParameters *codecpar = is->video_st->codecpar;
+    AVRational fr = av_guess_frame_rate(is->ic, is->video_st, NULL);
+    AVBufferSrcParameters *par = av_buffersrc_parameters_alloc();
+    if (!par)
+        return AVERROR(ENOMEM);
 
-    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(frame->format);
-    int is_hw = (desc && (desc->flags & AV_PIX_FMT_FLAG_HWACCEL))
-             || frame->format == AV_PIX_FMT_VIDEOTOOLBOX
-             || frame->hw_frames_ctx != NULL;
-
-    if (!is_hw && pctx) {
-        if (!*pctx) {
-            *pctx = ffp_video_filter_create();
-            if (!*pctx)
-                return AVERROR(ENOMEM);
-        }
-        FFVideoFilterContext *ctx = *pctx;
-        AVRational tb;
-        AVRational frame_rate = av_guess_frame_rate(is->ic, is->video_st, NULL);
-
-        if (   ctx->last_w != frame->width
-            || ctx->last_h != frame->height
-            || ctx->last_format != frame->format
-            || ctx->last_serial != is->viddec.pkt_serial
-            || ffp->vf_changed) {
-            SDL_LockMutex(ffp->vf_mutex);
-            ffp->vf_changed = 0;
-            av_log(NULL, AV_LOG_INFO,
-                   "Video frame changed from size:%dx%d format:%s serial:%d to size:%dx%d format:%s serial:%d\n",
-                   ctx->last_w, ctx->last_h,
-                   (const char *)av_x_if_null(av_get_pix_fmt_name(ctx->last_format), "none"), ctx->last_serial,
-                   frame->width, frame->height,
-                   (const char *)av_x_if_null(av_get_pix_fmt_name(frame->format), "none"), is->viddec.pkt_serial);
-            avfilter_graph_free(&ctx->graph);
-            ctx->graph = avfilter_graph_alloc();
-            if (!ctx->graph) {
-                SDL_UnlockMutex(ffp->vf_mutex);
-                return AVERROR(ENOMEM);
-            }
-            if ((ret = configure_video_filters(ffp, ctx->graph, is, ffp->vfilters, frame)) < 0) {
-                SDL_UnlockMutex(ffp->vf_mutex);
-                return ret;
-            }
-            ctx->filt_in  = is->in_video_filter;
-            ctx->filt_out = is->out_video_filter;
-            ctx->last_w = frame->width;
-            ctx->last_h = frame->height;
-            ctx->last_format = frame->format;
-            ctx->last_serial = is->viddec.pkt_serial;
-            SDL_UnlockMutex(ffp->vf_mutex);
-        }
-
-        frame_rate = av_buffersink_get_frame_rate(ctx->filt_out);
-
-        ret = av_buffersrc_add_frame(ctx->filt_in, frame);
-        if (ret < 0)
-            return ret;
-
-        while (ret >= 0) {
-            is->frame_last_returned_time = av_gettime_relative() / 1000000.0;
-
-            ret = av_buffersink_get_frame_flags(ctx->filt_out, frame, 0);
-            if (ret < 0) {
-                if (ret == AVERROR_EOF)
-                    is->viddec.finished = is->viddec.pkt_serial;
-                ret = 0;
-                break;
-            }
-
-            is->frame_last_filter_delay = av_gettime_relative() / 1000000.0 - is->frame_last_returned_time;
-            if (fabs(is->frame_last_filter_delay) > AV_NOSYNC_THRESHOLD / 10.0)
-                is->frame_last_filter_delay = 0;
-            tb = av_buffersink_get_time_base(ctx->filt_out);
-
-            if (output_cb) {
-                ret = output_cb(ffp, frame, tb, frame_rate, opaque);
-            }
-            av_frame_unref(frame);
-
-            if (is->videoq.serial != is->viddec.pkt_serial)
-                break;
-        }
-    } else {
-        if (is_hw && ffp->deinterlace > 0) {
-            static int hw_log_once = 0;
-            if (!hw_log_once) {
-                av_log(ffp, AV_LOG_WARNING, "deinterlace filter requested (%d), but video frame is HW accelerated (%d), bypassing software AVFilter!\n",
-                       ffp->deinterlace, frame->format);
-                hw_log_once = 1;
-            }
-        }
-        AVRational tb = is->video_st->time_base;
-        AVRational frame_rate = av_guess_frame_rate(is->ic, is->video_st, NULL);
-        if (output_cb) {
-            ret = output_cb(ffp, frame, tb, frame_rate, opaque);
-        }
-        av_frame_unref(frame);
+    if (!vfilters || !vfilters[0]) {
+        av_freep(&par);
+        return AVERROR(EINVAL);
     }
 
+    const AVDictionaryEntry *e = NULL;
+#if IS_FFMPEG_6
+    while ((e = av_dict_iterate(ffp->sws_dict, e)))
+#else
+    while ((e = av_dict_get(ffp->sws_dict, "", e, AV_DICT_IGNORE_SUFFIX)))
+#endif
+    {
+        if (!strcmp(e->key, "sws_flags")) {
+            av_strlcatf(sws_flags_str, sizeof(sws_flags_str), "%s=%s:", "flags", e->value);
+        } else
+            av_strlcatf(sws_flags_str, sizeof(sws_flags_str), "%s=%s:", e->key, e->value);
+    }
+    if (strlen(sws_flags_str))
+        sws_flags_str[strlen(sws_flags_str)-1] = '\0';
+
+    graph->scale_sws_opts = av_strdup(sws_flags_str);
+
+    snprintf(buffersrc_args, sizeof(buffersrc_args),
+             "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d:"
+             "colorspace=%d:range=%d",
+             frame->width, frame->height, frame->format,
+             is->video_st->time_base.num, is->video_st->time_base.den,
+             codecpar->sample_aspect_ratio.num, FFMAX(codecpar->sample_aspect_ratio.den, 1),
+             frame->colorspace, frame->color_range);
+    if (fr.num && fr.den)
+        av_strlcatf(buffersrc_args, sizeof(buffersrc_args), ":frame_rate=%d/%d", fr.num, fr.den);
+
+    if ((ret = avfilter_graph_create_filter(&filt_src,
+                                            avfilter_get_by_name("buffer"),
+                                            "ffplay_buffer", buffersrc_args, NULL,
+                                            graph)) < 0)
+        goto fail;
+    //not sure set par is necessory
+    par->hw_frames_ctx = frame->hw_frames_ctx;
+    ret = av_buffersrc_parameters_set(filt_src, par);
+    if (ret < 0)
+        goto fail;
+    
+    ret = avfilter_graph_create_filter(&filt_out,
+                                       avfilter_get_by_name("buffersink"),
+                                       "ffplay_buffersink", NULL, NULL, graph);
+    if (ret < 0)
+        goto fail;
+
+    last_filter = filt_out;
+    
+    if ((ret = configure_filtergraph(graph, vfilters, filt_src, last_filter)) < 0)
+        goto fail;
+
+    is->in_video_filter  = filt_src;
+    is->out_video_filter = filt_out;
+
+fail:
     return ret;
 }
 #endif
@@ -2561,10 +2428,10 @@ static int audio_thread(void *arg)
                                 av_log(NULL, AV_LOG_INFO, "audio accurate_seek start, target_pos=%0.3f, audio_clock=%0.3f, delay:%0.3f, estimate drop=%d, is->accurate_seek_start_time=%lld\n", is->seek_pos/1000000.0, audio_clock, audio_delay, need_drop, is->accurate_seek_start_time);
                             }
                             is->drop_aframe_count++;
-/*
- decode audio stream is faster, audio accurate seek finished in a flash.
- some video stream decode is slow, accurate seek maybe timeout, thus video picture display in a flash, because video clock is later, so dropping frames need keep a safe distance.
- */
+                            /*
+                             decode audio stream is faster, audio accurate seek finished in a flash.
+                             some video stream decode is slow, accurate seek maybe timeout, thus video picture display in a flash, because video clock is later, so dropping frames need keep a safe distance.
+                             */
                             while (audio_delay == 0 && is->video_accurate_seek_req && !is->abort_request) {
                                 int64_t vpts = is->accurate_seek_vframe_pts;
                                 int64_t deviation2 = vpts - audio_clock * 1000 * 1000;
@@ -2581,7 +2448,7 @@ static int audio_thread(void *arg)
                                     break;
                                 }
                             }
-
+                            
                             now = av_gettime_relative() / 1000;
                             if ((now - is->accurate_seek_start_time) <= ffp->accurate_seek_timeout) {
                                 av_frame_unref(frame);
@@ -2765,6 +2632,156 @@ static int on_video_picture_output(FFPlayer *ffp, AVFrame *frame, AVRational tb,
     return queue_picture(ffp, frame, pts, duration, pos, is->viddec.pkt_serial, is->viddec.pkt_demux_ms);
 }
 
+static int ffp_assemble_video_filters(FFPlayer *ffp, char *buf, size_t buf_size)
+{
+    if (!buf || buf_size == 0)
+        return 0;
+    
+    buf[0] = '\0';
+    
+    if (ffp->vfilters && ffp->vfilters[0]) {
+        av_strlcpy(buf, ffp->vfilters, buf_size);
+    }
+    
+    if (ffp->deinterlace > 0) {
+        if (buf[0])
+            av_strlcatf(buf, buf_size, ",");
+        
+        switch (ffp->deinterlace) {
+            case 1:
+                // bwdif: SIMD-accelerated (NEON/AVX2), optimal performance and quality
+                av_strlcatf(buf, buf_size, "bwdif=mode=0:parity=-1:deint=0");
+                break;
+            case 2:
+                // yadif: classic software spatial/temporal deinterlacing
+                av_strlcatf(buf, buf_size, "yadif=mode=0:parity=-1:deint=0");
+                break;
+            case 3:
+                // field: simple field extraction with ultra-low CPU usage
+                av_strlcatf(buf, buf_size, "field=type=top");
+                break;
+            default:
+                av_strlcatf(buf, buf_size, "bwdif=mode=0:parity=-1:deint=0");
+                break;
+        }
+    }
+    
+    return (int)strlen(buf);
+}
+
+static int ffp_video_filter_process(FFPlayer *ffp, FFVideoFilterContext **pctx, AVFrame *frame, AVRational* p_frame_rate, AVRational* p_tb)
+{
+    VideoState *is = ffp->is;
+    int ret = 0;
+    
+    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(frame->format);
+    int is_hw = (desc && (desc->flags & AV_PIX_FMT_FLAG_HWACCEL))
+    || frame->format == AV_PIX_FMT_VIDEOTOOLBOX
+    || frame->hw_frames_ctx != NULL;
+    
+    if (is_hw) {
+        if (ffp->vf_changed > 0) {
+            static int hw_log_once = 0;
+            if (!hw_log_once) {
+                av_log(ffp, AV_LOG_WARNING, "can't enable video filter,video frame is HW accelerated (%d), bypassing software AVFilter!\n", frame->format);
+                hw_log_once = 1;
+            }
+        }
+        return on_video_picture_output(ffp, frame, *p_tb, *p_frame_rate, is);
+    }
+    
+    FFVideoFilterContext *vf_ctx = *pctx;
+    int need_reconfigure = 0;
+    
+    if (ffp->vf_changed) {
+        need_reconfigure = 1;
+    } else if (vf_ctx && vf_ctx->graph) {
+        if (   vf_ctx->last_w != frame->width
+            || vf_ctx->last_h != frame->height
+            || vf_ctx->last_format != frame->format
+            || vf_ctx->last_serial != is->viddec.pkt_serial) {
+            need_reconfigure = 1;
+        }
+    }
+    
+    if (need_reconfigure) {
+        char vfilters[1024] = "";
+        SDL_LockMutex(ffp->vf_mutex);
+        int vfilters_len = ffp_assemble_video_filters(ffp, vfilters, sizeof(vfilters));
+        ffp->vf_changed = 0;
+        SDL_UnlockMutex(ffp->vf_mutex);
+        
+        if (vfilters_len > 0) {
+            if (!*pctx) {
+                *pctx = ffp_video_filter_create();
+                if (!*pctx)
+                    return AVERROR(ENOMEM);
+            }
+            vf_ctx = *pctx;
+            
+            SDL_LockMutex(ffp->vf_mutex);
+            av_log(NULL, AV_LOG_INFO,
+                   "Video frame changed from size:%dx%d format:%s serial:%d to size:%dx%d format:%s serial:%d\n",
+                   vf_ctx->last_w, vf_ctx->last_h,
+                   (const char *)av_x_if_null(av_get_pix_fmt_name(vf_ctx->last_format), "none"), vf_ctx->last_serial,
+                   frame->width, frame->height,
+                   (const char *)av_x_if_null(av_get_pix_fmt_name(frame->format), "none"), is->viddec.pkt_serial);
+            avfilter_graph_free(&vf_ctx->graph);
+            vf_ctx->graph = avfilter_graph_alloc();
+            if (!vf_ctx->graph) {
+                SDL_UnlockMutex(ffp->vf_mutex);
+                return AVERROR(ENOMEM);
+            }
+            if ((ret = configure_video_filters(ffp, vf_ctx->graph, is, vfilters, frame)) < 0) {
+                SDL_UnlockMutex(ffp->vf_mutex);
+                return ret;
+            }
+            vf_ctx->filt_in  = is->in_video_filter;
+            vf_ctx->filt_out = is->out_video_filter;
+            vf_ctx->last_w = frame->width;
+            vf_ctx->last_h = frame->height;
+            vf_ctx->last_format = frame->format;
+            vf_ctx->last_serial = is->viddec.pkt_serial;
+            *p_frame_rate = av_buffersink_get_frame_rate(vf_ctx->filt_out);
+            SDL_UnlockMutex(ffp->vf_mutex);
+        } else if (*pctx) {
+            SDL_LockMutex(ffp->vf_mutex);
+            ffp_video_filter_free(pctx);
+            vf_ctx = NULL;
+            SDL_UnlockMutex(ffp->vf_mutex);
+        }
+    }
+    
+    if (vf_ctx && vf_ctx->graph) {
+        ret = av_buffersrc_add_frame(vf_ctx->filt_in, frame);
+        if (ret < 0)
+            return ret;
+        
+        while (ret >= 0) {
+            is->frame_last_returned_time = av_gettime_relative() / 1000000.0;
+            
+            ret = av_buffersink_get_frame_flags(vf_ctx->filt_out, frame, 0);
+            if (ret < 0) {
+                if (ret == AVERROR_EOF)
+                    is->viddec.finished = is->viddec.pkt_serial;
+                ret = 0;
+                break;
+            }
+            
+            is->frame_last_filter_delay = av_gettime_relative() / 1000000.0 - is->frame_last_returned_time;
+            if (fabs(is->frame_last_filter_delay) > AV_NOSYNC_THRESHOLD / 10.0)
+                is->frame_last_filter_delay = 0;
+            *p_tb = av_buffersink_get_time_base(vf_ctx->filt_out);
+            ret = on_video_picture_output(ffp, frame, *p_tb, *p_frame_rate, is);
+            if (is->videoq.serial != is->viddec.pkt_serial)
+                break;
+        }
+        return ret;
+    } else {
+        return on_video_picture_output(ffp, frame, *p_tb, *p_frame_rate, is);
+    }
+}
+
 static int ffplay_video_thread(void *arg)
 {
     FFPlayer *ffp = (FFPlayer *)arg;
@@ -2772,7 +2789,8 @@ static int ffplay_video_thread(void *arg)
     AVFrame *frame = av_frame_alloc();
     int ret = 0;
     int convert_frame_count = 0;
-
+    AVRational tb = {0, 0};
+    AVRational frame_rate = {0, 0};
 #if CONFIG_VIDEO_AVFILTER
     FFVideoFilterContext *vf_ctx = NULL;
 #endif
@@ -2787,14 +2805,17 @@ static int ffplay_video_thread(void *arg)
             goto the_end;
         if (!ret)
             continue;
-
+        
+        if (is->video_st) {
+            tb = is->video_st->time_base;
+            frame_rate = av_guess_frame_rate(is->ic, is->video_st, NULL);
+        }
 #if CONFIG_VIDEO_AVFILTER
-        ret = ffp_video_filter_process(ffp, &vf_ctx, frame, on_video_picture_output, is);
+        ret = ffp_video_filter_process(ffp, &vf_ctx, frame, &frame_rate, &tb);
 #else
-        ret = on_video_picture_output(ffp, frame, is->video_st->time_base, av_guess_frame_rate(is->ic, is->video_st, NULL), is);
+        ret = on_video_picture_output(ffp, frame, tb, frame_rate, is);
         av_frame_unref(frame);
 #endif
-
         if (ret < 0)
             goto the_end;
     }
@@ -3316,6 +3337,7 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
                memset(stream, 0, len);
                is->audio_buf = NULL;
                is->audio_buf_size = 0;
+               is->audio_buf_index = 0;
                is->audio_silence_last_callback = 1;
                break;
            } else {
@@ -3684,6 +3706,17 @@ static int ffp_android_mediacodec_init(FFPlayer *ffp, AVCodecContext *avctx, con
         return -1;
     }
 
+    /* The external-texture path is SDR RGBA. Preserve HDR precision by using
+     * software decode/tone mapping instead of silently sampling it as SDR. */
+    if (SDL_VoutAndroid_IsOpenGLES3(ffp->vout) &&
+        (avctx->colorspace == AVCOL_SPC_BT2020_NCL ||
+         avctx->colorspace == AVCOL_SPC_BT2020_CL ||
+         avctx->color_trc == AVCOL_TRC_SMPTE2084 ||
+         avctx->color_trc == AVCOL_TRC_ARIB_STD_B67)) {
+        ALOGI("android: ES3 HDR stream uses software tone mapping\n");
+        return -1;
+    }
+
     enum AVHWDeviceType type = av_hwdevice_find_type_by_name("mediacodec");
     if (type == AV_HWDEVICE_TYPE_NONE)
         return -1;
@@ -3749,7 +3782,7 @@ static int check_stream_specifier(AVFormatContext *s, AVStream *st, const char *
     return ret;
 }
 
-static int filter_codec_opts(const AVDictionary *opts, enum AVCodecID codec_id,
+int filter_codec_opts(const AVDictionary *opts, enum AVCodecID codec_id,
                       AVFormatContext *s, AVStream *st, const AVCodec *codec,
                       AVDictionary **dst, AVDictionary **opts_used)
 {
@@ -3824,7 +3857,7 @@ static int filter_codec_opts(const AVDictionary *opts, enum AVCodecID codec_id,
     return 0;
 }
 
-static int setup_find_stream_info_opts(AVFormatContext *s,
+int setup_find_stream_info_opts(AVFormatContext *s,
                                 AVDictionary *local_codec_opts,
                                 AVDictionary ***dst)
 {
@@ -3881,6 +3914,10 @@ static int stream_component_open(FFPlayer *ffp, int stream_index)
     AVCodecContext *avctx;
     const AVCodec *codec = NULL;
     const char *forced_codec_name = NULL;
+#if defined(__ANDROID__)
+    int android_mc_attempted = 0;
+    int android_mc_disabled = 0;
+#endif
     AVDictionary *opts = NULL;
     int sample_rate;
     AVChannelLayout ch_layout = { 0 };
@@ -3893,6 +3930,10 @@ static int stream_component_open(FFPlayer *ffp, int stream_index)
     AVStream *st = ic->streams[stream_index];
     assert(st->codecpar->codec_type != AVMEDIA_TYPE_SUBTITLE);
     
+#if defined(__ANDROID__)
+reopen_android_decoder:
+    stream_lowres = ffp->lowres;
+#endif
     avctx = avcodec_alloc_context3(NULL);
     if (!avctx)
         return AVERROR(ENOMEM);
@@ -3955,13 +3996,16 @@ static int stream_component_open(FFPlayer *ffp, int stream_index)
      * 原生 h264/hevc 等解码器的 hw_configs 里不含 MediaCodec。
      * 其解码输出目标是渲染器内部的 AImageReader Surface（零拷贝源头）。
      */
-    if (!forced_codec_name && avctx->codec_type == AVMEDIA_TYPE_VIDEO &&
+    if (!android_mc_disabled && !forced_codec_name &&
+        avctx->codec_type == AVMEDIA_TYPE_VIDEO &&
         !(st->disposition & AV_DISPOSITION_ATTACHED_PIC) &&
+        SDL_VoutAndroid_IsMediaCodecSupported(ffp->vout) &&
         ffp_android_mediacodec_wanted(ffp, avctx->codec_id)) {
         const char *mc_name = ffp_android_mediacodec_decoder_name(avctx->codec_id);
         const AVCodec *mc_codec = mc_name ? avcodec_find_decoder_by_name(mc_name) : NULL;
         if (mc_codec) {
             codec = mc_codec;
+            android_mc_attempted = 1;
             ALOGI("android: use %s\n", mc_name);
         } else {
             ALOGI("android: %s unavailable, fallback to %s\n",
@@ -4020,11 +4064,15 @@ static int stream_component_open(FFPlayer *ffp, int stream_index)
      * MediaCodec 硬解：解码直出 AImageReader 的 Surface，帧不落 CPU，
      * 渲染器用 Vulkan 外部显存（零拷贝）直接采样。
      */
-    if (avctx->codec_type == AVMEDIA_TYPE_VIDEO &&
+    if (!android_mc_disabled && avctx->codec_type == AVMEDIA_TYPE_VIDEO &&
         !(st->disposition & AV_DISPOSITION_ATTACHED_PIC) &&
+        strstr(codec->name, "_mediacodec") &&
         ffp_android_mediacodec_wanted(ffp, avctx->codec_id)) {
-        if (ffp_android_mediacodec_init(ffp, avctx, codec) == 0)
+        ret = ffp_android_mediacodec_init(ffp, avctx, codec);
+        if (ret == 0)
             ALOGI("try use mediacodec accel: %s\n", codec->name);
+        else if (android_mc_attempted)
+            goto retry_android_software;
 
         /*
          * MP4 里是 AVCC（长度前缀），MediaCodec 只吃 Annex-B：把 extradata
@@ -4036,6 +4084,19 @@ static int stream_component_open(FFPlayer *ffp, int stream_index)
     }
 #endif
     if ((ret = avcodec_open2(avctx, codec, &opts)) < 0) {
+#if defined(__ANDROID__)
+        if (android_mc_attempted && !android_mc_disabled) {
+retry_android_software:
+            ALOGW("android: MediaCodec open failed (%d); retry software decoder\n", ret);
+            /* Recreate from codecpar: failed open consumed options and may have
+             * changed extradata/get_format/hw_device_ctx. Never reuse that context. */
+            avcodec_free_context(&avctx);
+            av_dict_free(&opts);
+            android_mc_disabled = 1;
+            android_mc_attempted = 0;
+            goto reopen_android_decoder;
+        }
+#endif
         goto fail;
     }
     const AVDictionaryEntry *t = NULL;
@@ -4252,13 +4313,13 @@ out:
     return ret;
 }
 
-static int decode_interrupt_cb(void *ctx)
+int decode_interrupt_cb(void *ctx)
 {
     VideoState *is = ctx;
     return is->abort_request;
 }
 
-static int stream_has_enough_packets(AVStream *st, int stream_id, PacketQueue *queue, int min_frames) {
+int stream_has_enough_packets(AVStream *st, int stream_id, PacketQueue *queue, int min_frames) {
     return stream_id < 0 ||
            queue->abort_request ||
            (st->disposition & AV_DISPOSITION_ATTACHED_PIC) ||
@@ -4314,6 +4375,25 @@ static double max_buffer_size(FFPlayer *ffp)
         audio_delay = ffp->is->audio_st ? get_clock_extral_delay(&ffp->is->audclk) : 0;
     }
     return ffp->dcc.max_buffer_size + fabs(audio_delay) * DEFAULT_QUEUE_SIZE;
+}
+
+static void subtile_update_ic(FFPlayer *ffp, VideoState *is, int *st_index) {
+    if (is->video_st) {
+        AVCodecParameters *codecpar = is->video_st->codecpar;
+        
+        int v_width = codecpar->width;
+        if (codecpar->sample_aspect_ratio.num > 0 && codecpar->sample_aspect_ratio.den > 0) {
+            float ratio = 1.0 * codecpar->sample_aspect_ratio.num / codecpar->sample_aspect_ratio.den;
+            v_width = (int)(v_width * ratio);
+        }
+        ff_sub_stream_ic_ready(is->ffSub, is->ic, v_width, codecpar->height);
+        if (st_index[AVMEDIA_TYPE_SUBTITLE] >= 0) {
+            AVStream *st = is->ic->streams[st_index[AVMEDIA_TYPE_SUBTITLE]];
+            st->discard = AVDISCARD_DEFAULT;
+            ff_sub_record_need_select_stream(is->ffSub, st_index[AVMEDIA_TYPE_SUBTITLE]);
+            ffp_apply_subtitle_preference(ffp);
+        }
+    }
 }
 
 /* this thread gets the stream from the disk or the network */
@@ -4586,23 +4666,7 @@ static int read_thread(void *arg)
         is->show_mode = ret >= 0 ? SHOW_MODE_VIDEO : SHOW_MODE_RDFT;
     
     //tell subtitle stream is ready.
-    if (is->video_st) {
-        AVCodecParameters *codecpar = is->video_st->codecpar;
-                        
-        int v_width = codecpar->width;
-        if (codecpar->sample_aspect_ratio.num > 0 && codecpar->sample_aspect_ratio.den > 0) {
-            float ratio = 1.0 * codecpar->sample_aspect_ratio.num / codecpar->sample_aspect_ratio.den;
-            v_width = (int)(v_width * ratio);
-        }
-        ff_sub_stream_ic_ready(is->ffSub, ic, v_width, codecpar->height);
-        if (st_index[AVMEDIA_TYPE_SUBTITLE] >= 0) {
-            AVStream *st = ic->streams[st_index[AVMEDIA_TYPE_SUBTITLE]];
-            st->discard = AVDISCARD_DEFAULT;
-            ff_sub_record_need_select_stream(is->ffSub, st_index[AVMEDIA_TYPE_SUBTITLE]);
-            ffp_apply_subtitle_preference(ffp);
-        }
-    }
-    
+    subtile_update_ic(ffp, is, st_index);
     ffp_notify_msg1(ffp, FFP_MSG_COMPONENT_OPEN);
 
     if (!ffp->ijkmeta_delay_init) {
@@ -5737,24 +5801,15 @@ void ffp_set_option_intptr(FFPlayer *ffp, int opt_category, const char *name, ui
     av_dict_set_intptr(dict, name, value, 0);
 }
 
-
-
-static void ffp_show_dict(FFPlayer *ffp, const char *tag, AVDictionary *dict)
-{
-    AVDictionaryEntry *t = NULL;
-
-    while ((t = av_dict_get(dict, "", t, AV_DICT_IGNORE_SUFFIX))) {
-        av_log(ffp, AV_LOG_INFO, "%-*s: %-*s = %s\n", 12, tag, 28, t->key, t->value);
-    }
-}
-
 #if CONFIG_VIDEO_AVFILTER
 static void resetVideoFilter(FFPlayer *ffp, const char *filter) {
+    SDL_LockMutex(ffp->vf_mutex);
     av_freep(&ffp->vfilters);
     if (filter) {
         ffp->vfilters = av_strdup(filter);
-        ffp->vf_changed = 1;
     }
+    ffp->vf_changed = 1;
+    SDL_UnlockMutex(ffp->vf_mutex);
 }
 #endif
 
@@ -5772,14 +5827,27 @@ int ffp_prepare_async_l(FFPlayer *ffp, const char *file_name)
     }
 
     av_log(NULL, AV_LOG_INFO, "===== options =====\n");
-    ffp_show_dict(ffp, "player-opts", ffp->player_opts);
-    ffp_show_dict(ffp, "format-opts", ffp->format_opts);
-    ffp_show_dict(ffp, "codec-opts ", ffp->codec_opts);
-    ffp_show_dict(ffp, "sws-opts   ", ffp->sws_dict);
-    ffp_show_dict(ffp, "swr-opts   ", ffp->swr_opts);
+    show_dict_pretty(ffp, "player-opts", ffp->player_opts);
+    show_dict_pretty(ffp, "format-opts", ffp->format_opts);
+    show_dict_pretty(ffp, "codec-opts ", ffp->codec_opts);
+    show_dict_pretty(ffp, "sws-opts   ", ffp->sws_dict);
+    show_dict_pretty(ffp, "swr-opts   ", ffp->swr_opts);
     av_log(NULL, AV_LOG_INFO, "===================\n");
 
+#if defined(__ANDROID__)
+    int option_result = av_opt_set_dict(ffp, &ffp->player_opts);
+    if (option_result < 0)
+        return option_result;
+    if (SDL_VoutAndroid_PrepareRenderer(ffp->vout, ffp->video_renderer) < 0)
+        return AVERROR(EINVAL);
+    ffp->gpu = SDL_VoutAndroid_GetGPU(ffp->vout);
+    if (!ffp->gpu) {
+        ffp->subtitle_mix = 0;
+        ALOGW("video renderer has no subtitle GPU context\n");
+    }
+#else
     av_opt_set_dict(ffp, &ffp->player_opts);
+#endif
     if (!ffp->aout) {
         ffp->aout = ffpipeline_open_audio_output(ffp->pipeline, ffp);
         if (!ffp->aout)
@@ -5790,6 +5858,9 @@ int ffp_prepare_async_l(FFPlayer *ffp, const char *file_name)
     ffp->vout->overlay_format    = ffp->overlay_format;
 #if CONFIG_VIDEO_AVFILTER
     resetVideoFilter(ffp, ffp->vfilter0);
+    if (ffp->deinterlace > 0) {
+        ffp->vf_changed = 1;
+    }
 #endif
 
     VideoState *is = stream_open(ffp, file_name, NULL);
@@ -6060,7 +6131,7 @@ void ffp_toggle_buffering(FFPlayer *ffp, int start_buffering)
     SDL_UnlockMutex(ffp->is->play_mutex);
 }
 
-void ffp_check_buffering_l(FFPlayer *ffp)
+static void ffp_check_buffering_l(FFPlayer *ffp)
 {
     VideoState *is            = ffp->is;
     int hwm_in_ms             = ffp->dcc.current_high_water_mark_in_ms; // use fast water mark for first loading
@@ -6501,6 +6572,12 @@ int64_t ffp_get_property_int64(FFPlayer *ffp, int id, int64_t default_value)
             }
         case FFP_PROP_INT64_AUDIO_DECODER:
             return FFP_PROPV_DECODER_AVCODEC;
+        case FFP_PROP_INT64_VIDEO_RENDERER:
+#if defined(__ANDROID__)
+            return SDL_VoutAndroid_GetRendererType(ffp->vout);
+#else
+            return default_value;
+#endif
         case FFP_PROP_INT64_VIDEO_SCALING_MODE:
             if (!ffp)
                 return default_value;
@@ -6701,7 +6778,10 @@ int ffp_add_active_external_subtitle(FFPlayer *ffp, const char *file_name)
 #if CONFIG_VIDEO_AVFILTER && 0
     //use subtitles filter
     char buffer[1024] = { 0 };
-    sprintf(buffer, "subtitles=%s", file_name);
+    int length = snprintf(buffer, sizeof(buffer), "subtitles=%s", file_name);
+    if (length < 0 || length >= (int)sizeof(buffer)) {
+        return -1;
+    }
     resetVideoFilter(ffp, av_strdup(buffer));
     return 1;
 #endif
@@ -6716,7 +6796,16 @@ int ffp_add_active_external_subtitle(FFPlayer *ffp, const char *file_name)
     IjkMediaMeta *stream_meta = NULL;
     int r = ff_sub_add_ex_subtitle(is->ffSub, file_name, &stream_meta, &idx);
     if (r == 1) {
-        //exist
+        //already exist,but also need reactive
+        //succ,not send STREAM_CHANGED msg because would send after selected the new stream int vout thread.
+        int ret = ff_sub_record_need_select_stream(is->ffSub, idx);
+        if (ret == 1) {
+            ffp_apply_subtitle_preference(ffp);
+            if (is->paused) {
+                is->force_refresh_sub_changed = 1;
+            }
+        }
+        return 0;
     } else if (r == 0) {
         ijkmeta_append_child_l(ffp->meta, stream_meta);
         //succ,not send STREAM_CHANGED msg because would send after selected the new stream int vout thread.

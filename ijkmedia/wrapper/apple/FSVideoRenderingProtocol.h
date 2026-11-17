@@ -103,6 +103,10 @@ typedef enum : NSUInteger {
 // Controls whether HDR direct rendering is permitted at all.
 // Default YES. Set to NO to always tone-map HDR content to SDR regardless of display capability.
 @property(nonatomic) BOOL allowHDRDirectDisplay HDR_API_AVAILABLE;
+// YES when the current display supports EDR/HDR and HDR content is rendered natively
+// (no tone-mapping to SDR). Updated automatically when the display changes.
+// HDR direct display is unavailable on tvOS
+@property(nonatomic, readonly) BOOL directDisplayHDRSupported HDR_API_AVAILABLE;
 // refresh current video picture and subtitle (when player paused change video pic preference, you can invoke this method)
 - (void)setNeedsRefreshCurrentPic;
 
@@ -127,6 +131,26 @@ typedef enum : NSUInteger {
 @property(nonatomic) int backgroundBlurIterations;
 // 单次高斯模糊的 sigma（模糊半径），默认 30，值越大越模糊。
 @property(nonatomic) float backgroundBlurSigma;
+
+#if !TARGET_OS_TV
+// ---- 画中画（Picture in Picture，iOS 15+/macOS 12+ 才可用）----
+// 准备画中画内容层（幂等）：创建 AVSampleBufferDisplayLayer 并挂进视图层级。
+// 返回 NO 表示该渲染视图/当前系统不支持画中画；不实现也视为不支持。
+- (BOOL)preparePictureInPicture;
+// 画中画内容层（AVSampleBufferDisplayLayer）；未准备成功时返回 nil。
+- (nullable CALayer *)pictureInPictureContentLayer;
+// 画中画是否正在运行：YES 时渲染视图应持续把画面喂给内容层。
+@property(nonatomic) BOOL pictureInPictureActive;
+// 即将停止画中画：在收起动画前恢复源层几何，active 和持续喂帧保持到 didStop。
+- (void)pictureInPictureWillStop;
+// 是否允许把画面喂给画中画内容层，默认 YES。
+@property(nonatomic) BOOL pictureInPictureFeedEnabled;
+// 同步画中画内容层的播放时间轴，供 PiP 窗口显示进度与时长。
+// time 为当前播放位置（秒），rate 为播放速率（播放 1.0 / 暂停 0.0）。
+// 内容层带 controlTimebase：设定 rate 后会自动按墙钟推进，无需逐帧更新。
+// 仅在 -preparePictureInPicture 成功后有效。
+- (void)updatePictureInPictureTimebaseWithTime:(NSTimeInterval)time rate:(float)rate;
+#endif
 
 // ---- 渲染层录制：录制 videoRenderingWillDisplay 处理后的视频帧 ----
 // 与 startFastRecord（直录原始码流，不含处理效果）互补。
