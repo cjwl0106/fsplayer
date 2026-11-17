@@ -157,6 +157,9 @@ typedef enum : NSUInteger {
 // 录制的是像素域重新编码的画面（有损、有额外开销），帧内容 = 代理替换后的帧。
 // 需在播放中调用；返回 0 表示成功。文件后缀建议 .mp4 或 .mov。
 // audioSampleRate/audioChannels 为播放输出音频参数（>0 时录制音频轨，0 只录视频）。
+// 预热录制管线（幂等）：提前创建 Metal 转换器并预热硬编会话，消除第一次
+// 开始录制时的画面卡顿。需在播放中调用（取当前帧确定预热参数），后台执行。
+- (void)warmUpRenderRecord;
 - (int)startRenderRecord:(NSString *)filePath
                 metadata:(nullable NSDictionary<NSString *, NSString *> *)metadata
         audioSampleRate:(int)audioSampleRate

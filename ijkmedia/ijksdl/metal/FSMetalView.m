@@ -112,6 +112,10 @@ typedef CGRect NSRect;
 @property (nonatomic, assign) CVMetalTextureCacheRef pictureTextureCache;
 @property (nonatomic, strong) FSMetalPipelineMeta *pipelineMeta;
 @property (atomic, strong) FSMetalRenderer *picturePipeline;
+// 渲染管线缓存：key = fragmentName|fullRange|hdr|matrix|transfer|colorPixelFormat|blend。
+// 特效开关切换时 CVPixelBuffer 在 NV12(相机原始) ↔ BGRA(SDK 输出) 之间来回，
+// 原逻辑每次都销毁重建 PSO（shader 重编译，切换瞬间掉帧）；缓存后切换零成本。
+@property (atomic, strong) NSMutableDictionary<NSString *, FSMetalRenderer *> *pipelineCache;
 // HEIC tile-grid 合成管线：结果缓存于本视图的 FSMetalRenderFrame。
 @property (atomic, strong) FSMetalTileGridPipeline *tileGridPipeline;
 @property (atomic, strong) FSMetalSubtitlePipeline *subPipeline;
@@ -219,6 +223,7 @@ typedef CGRect NSRect;
     _drawingFrame = nil;
     _tileGridPipeline = nil;
     _picturePipeline = nil;
+    _pipelineCache = nil;
     _subPipeline = nil;
     _backgroundPipeline = nil;
     _backgroundTexture = nil;
@@ -244,6 +249,7 @@ typedef CGRect NSRect;
     _backgroundBlurIterations = 3;
     _backgroundBlurSigma = 30.0;
     _renderSnapshotLock = [[NSLock alloc]init];
+    _pipelineCache = [[NSMutableDictionary alloc] init];
     _allowHDRDirectDisplay    = YES;
 #if !TARGET_OS_TV
     if (@available(iOS 16.0, macOS 10.11, *)) {
@@ -635,14 +641,30 @@ typedef CGRect NSRect;
     if (!pixelBuffer) {
         return NO;
     }
-    
+
     if (self.picturePipeline) {
         if ([self.picturePipeline matchPixelBuffer:pixelBuffer] && self.picturePipelineHasAlpha == blend) {
             return YES;
         }
-        ALOGI("pixel format not match,need rebuild pipeline");
+        ALOGI("pixel format not match, lookup pipeline cache");
     }
-    
+
+    // 以 meta + 目标像素格式 + blend 作为缓存 key 查找已建管线，
+    // 命中则直接复用，避免 shader 重编译（特效开关切换时每帧格式来回切换）
+    FSMetalPipelineMeta *meta = [FSMetalPipelineMeta createWithCVPixelbuffer:pixelBuffer];
+    if (!meta) {
+        return NO;
+    }
+    NSString *key = [NSString stringWithFormat:@"%@|%d|%d|%ld|%ld|%lu|%d",
+                     meta.fragmentName, meta.fullRange, meta.hdrContent,
+                     (long)meta.convertMatrixType, (long)meta.transferFunc,
+                     (unsigned long)self.colorPixelFormat, blend];
+    FSMetalRenderer *cached = self.pipelineCache[key];
+    if (cached) {
+        self.picturePipeline = cached;
+        return YES;
+    }
+
     FSMetalRenderer *picturePipeline = [[FSMetalRenderer alloc] initWithDevice:self.device colorPixelFormat:self.colorPixelFormat];
 #if !TARGET_OS_TV
     if (@available(iOS 16.0, macOS 10.11, *)) {
@@ -655,6 +677,8 @@ typedef CGRect NSRect;
     if (!created) {
         ALOGE("create RenderPipeline failed.");
         picturePipeline = nil;
+    } else {
+        self.pipelineCache[key] = picturePipeline;
     }
     self.pipelineMeta = meta;
     self.picturePipeline = picturePipeline;
@@ -2184,6 +2208,53 @@ end:
 
 #pragma mark - Render Record
 
+// 预热录制管线（幂等）：提前创建共享 Metal 转换器 + 预热硬编会话，消除
+// 第一次录制时 Metal kernel 编码与 VideoToolbox 编码器初始化造成的画面卡顿。
+// 全部在后台线程，起播前后均可调用。
+// 无当前帧（播放未起）时用默认 1280x720 NV12 预热：硬编会话与真实录制
+// 尺寸不同时系统复用率略降，但编码器初始化的大头开销已经消除
+- (void)warmUpRenderRecord
+{
+    [self.renderSnapshotLock lock];
+    FSOverlayAttach *attach = self.currentAttach;
+    CVPixelBufferRef pixelBuffer = attach.videoPicture;
+    float fps = attach.fps;
+    if (!pixelBuffer && attach.tilePieces.count > 0) {
+        pixelBuffer = ((FSTilePiece *)attach.tilePieces.firstObject).pixelBuffer;
+    }
+    // 锁内 retain：锁外渲染线程可能随时释放 videoPicture（属性赋值即释放
+    // 旧值）。warmUp 内部异步 block 接管所有权并在结束时释放，本方法
+    // 返回前即可释放自己这份引用
+    if (pixelBuffer) {
+        CVPixelBufferRetain(pixelBuffer);
+    }
+    [self.renderSnapshotLock unlock];
+
+    CVPixelBufferRef fallback = NULL;
+    if (!pixelBuffer) {
+        NSDictionary *attrs = @{
+            (__bridge NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+            (__bridge NSString *)kCVPixelBufferWidthKey: @(1280),
+            (__bridge NSString *)kCVPixelBufferHeightKey: @(720),
+        };
+        CVPixelBufferCreate(kCFAllocatorDefault, 1280, 720,
+                            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                            (__bridge CFDictionaryRef)attrs, &fallback);
+        pixelBuffer = fallback;
+        fps = 30.0f;
+    }
+
+    [FSRenderRecorder warmUpResourcesWithPixelBuffer:pixelBuffer
+                                                 fps:fps
+                                     audioSampleRate:0
+                                       audioChannels:0];
+    // warmUp 已在入口同步 retain 接管异步 block 的使用，这里立即释放本方
+    // 法的引用（fallback 是本方法创建的，同样释放）
+    if (pixelBuffer) {
+        CVPixelBufferRelease(pixelBuffer);
+    }
+}
+
 - (int)startRenderRecord:(NSString *)filePath
                 metadata:(NSDictionary<NSString *, NSString *> *)metadata
         audioSampleRate:(int)audioSampleRate
@@ -2197,10 +2268,12 @@ end:
         ALOGW("startRenderRecord: no current video picture\n");
         return -1;
     }
-
-    if (!self.renderRecorder) {
-        self.renderRecorder = [[FSRenderRecorder alloc] init];
+    if (!self.renderRecorder) {        self.renderRecorder = [[FSRenderRecorder alloc] init];
     }
+    [self.renderSnapshotLock unlock];
+
+    // startRecord 放在锁外执行：内部虽已异步化（微秒级返回），
+    // 也不该占用渲染线程的临界区
     int ret = [self.renderRecorder startRecord:filePath
                                    pixelBuffer:pixelBuffer
                                            fps:frame.fps
@@ -2210,7 +2283,6 @@ end:
     if (ret != 0) {
         self.renderRecorder = nil;
     }
-    [self.renderSnapshotLock unlock];
     return ret;
 }
 
